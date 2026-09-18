@@ -1,0 +1,18 @@
+# data archives (GBs) and derived outputs — rebuilt by the fetch_*.py scripts
+data/
+out/*
+!out/stations.json
+!out/station_coords.json
+!out/windows.json
+# runtime state, logs, fills, kill switch
+bot/*.log
+bot/*.out
+bot/*_state.json
+bot/*_state.json.tmp
+bot/*_trades.csv
+bot/STOP
+__pycache__/
+*.pyc
+# never commit secrets
+.env
+*.env

@@ -1,0 +1,434 @@
+[
+ {
+  "city": "Amsterdam",
+  "tz": "Europe/Amsterdam",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "Ankara",
+  "tz": "Europe/Istanbul",
+  "utc_offset": 3.0,
+  "unit": "C",
+  "start_utc": 15.0,
+  "end_utc": 17.0
+ },
+ {
+  "city": "Atlanta",
+  "tz": "America/New_York",
+  "utc_offset": -4.0,
+  "unit": "F",
+  "start_utc": 22.0,
+  "end_utc": 0.0
+ },
+ {
+  "city": "Austin",
+  "tz": "America/Chicago",
+  "utc_offset": -5.0,
+  "unit": "F",
+  "start_utc": 23.0,
+  "end_utc": 1.0
+ },
+ {
+  "city": "Beijing",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Buenos Aires",
+  "tz": "America/Argentina/Buenos_Aires",
+  "utc_offset": -3.0,
+  "unit": "C",
+  "start_utc": 21.0,
+  "end_utc": 23.0
+ },
+ {
+  "city": "Busan",
+  "tz": "Asia/Seoul",
+  "utc_offset": 9.0,
+  "unit": "C",
+  "start_utc": 9.0,
+  "end_utc": 11.0
+ },
+ {
+  "city": "Cape Town",
+  "tz": "Africa/Johannesburg",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "Chengdu",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Chicago",
+  "tz": "America/Chicago",
+  "utc_offset": -5.0,
+  "unit": "F",
+  "start_utc": 23.0,
+  "end_utc": 1.0
+ },
+ {
+  "city": "Chongqing",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Dallas",
+  "tz": "America/Chicago",
+  "utc_offset": -5.0,
+  "unit": "F",
+  "start_utc": 23.0,
+  "end_utc": 1.0
+ },
+ {
+  "city": "Denver",
+  "tz": "America/Denver",
+  "utc_offset": -6.0,
+  "unit": "F",
+  "start_utc": 0.0,
+  "end_utc": 2.0
+ },
+ {
+  "city": "Guangzhou",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Helsinki",
+  "tz": "Europe/Helsinki",
+  "utc_offset": 3.0,
+  "unit": "C",
+  "start_utc": 15.0,
+  "end_utc": 17.0
+ },
+ {
+  "city": "Hong Kong",
+  "tz": "Asia/Hong_Kong",
+  "utc_offset": 8.0,
+  "unit": "?",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Houston",
+  "tz": "America/Chicago",
+  "utc_offset": -5.0,
+  "unit": "F",
+  "start_utc": 23.0,
+  "end_utc": 1.0
+ },
+ {
+  "city": "Istanbul",
+  "tz": "Europe/Istanbul",
+  "utc_offset": 3.0,
+  "unit": "C",
+  "start_utc": 15.0,
+  "end_utc": 17.0
+ },
+ {
+  "city": "Jakarta",
+  "tz": "Asia/Jakarta",
+  "utc_offset": 7.0,
+  "unit": "?",
+  "start_utc": 11.0,
+  "end_utc": 13.0
+ },
+ {
+  "city": "Jeddah",
+  "tz": "Asia/Riyadh",
+  "utc_offset": 3.0,
+  "unit": "C",
+  "start_utc": 15.0,
+  "end_utc": 17.0
+ },
+ {
+  "city": "Jinan",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "?",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Karachi",
+  "tz": "Asia/Karachi",
+  "utc_offset": 5.0,
+  "unit": "C",
+  "start_utc": 13.0,
+  "end_utc": 15.0
+ },
+ {
+  "city": "Kuala Lumpur",
+  "tz": "Asia/Kuala_Lumpur",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Lagos",
+  "tz": "Africa/Lagos",
+  "utc_offset": 1.0,
+  "unit": "?",
+  "start_utc": 17.0,
+  "end_utc": 19.0
+ },
+ {
+  "city": "London",
+  "tz": "Europe/London",
+  "utc_offset": 1.0,
+  "unit": "C",
+  "start_utc": 17.0,
+  "end_utc": 19.0
+ },
+ {
+  "city": "Los Angeles",
+  "tz": "America/Los_Angeles",
+  "utc_offset": -7.0,
+  "unit": "F",
+  "start_utc": 1.0,
+  "end_utc": 3.0
+ },
+ {
+  "city": "Lucknow",
+  "tz": "Asia/Kolkata",
+  "utc_offset": 5.5,
+  "unit": "C",
+  "start_utc": 12.5,
+  "end_utc": 14.5
+ },
+ {
+  "city": "Madrid",
+  "tz": "Europe/Madrid",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "Manila",
+  "tz": "Asia/Manila",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Mexico City",
+  "tz": "America/Mexico_City",
+  "utc_offset": -6.0,
+  "unit": "C",
+  "start_utc": 0.0,
+  "end_utc": 2.0
+ },
+ {
+  "city": "Miami",
+  "tz": "America/New_York",
+  "utc_offset": -4.0,
+  "unit": "F",
+  "start_utc": 22.0,
+  "end_utc": 0.0
+ },
+ {
+  "city": "Milan",
+  "tz": "Europe/Rome",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "Moscow",
+  "tz": "Europe/Moscow",
+  "utc_offset": 3.0,
+  "unit": "C",
+  "start_utc": 15.0,
+  "end_utc": 17.0
+ },
+ {
+  "city": "Munich",
+  "tz": "Europe/Berlin",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "New York City",
+  "tz": "America/New_York",
+  "utc_offset": -4.0,
+  "unit": "F",
+  "start_utc": 22.0,
+  "end_utc": 0.0
+ },
+ {
+  "city": "Panama City",
+  "tz": "America/Panama",
+  "utc_offset": -5.0,
+  "unit": "C",
+  "start_utc": 23.0,
+  "end_utc": 1.0
+ },
+ {
+  "city": "Paris",
+  "tz": "Europe/Paris",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "Qingdao",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "San Francisco",
+  "tz": "America/Los_Angeles",
+  "utc_offset": -7.0,
+  "unit": "F",
+  "start_utc": 1.0,
+  "end_utc": 3.0
+ },
+ {
+  "city": "Sao Paulo",
+  "tz": "America/Sao_Paulo",
+  "utc_offset": -3.0,
+  "unit": "C",
+  "start_utc": 21.0,
+  "end_utc": 23.0
+ },
+ {
+  "city": "Seattle",
+  "tz": "America/Los_Angeles",
+  "utc_offset": -7.0,
+  "unit": "F",
+  "start_utc": 1.0,
+  "end_utc": 3.0
+ },
+ {
+  "city": "Seoul",
+  "tz": "Asia/Seoul",
+  "utc_offset": 9.0,
+  "unit": "?",
+  "start_utc": 9.0,
+  "end_utc": 11.0
+ },
+ {
+  "city": "Seoul (Incheon)",
+  "tz": "Asia/Seoul",
+  "utc_offset": 9.0,
+  "unit": "C",
+  "start_utc": 9.0,
+  "end_utc": 11.0
+ },
+ {
+  "city": "Shanghai",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Shenzhen",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Singapore",
+  "tz": "Asia/Singapore",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Taipei",
+  "tz": "Asia/Taipei",
+  "utc_offset": 8.0,
+  "unit": "?",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Tel Aviv",
+  "tz": "Asia/Jerusalem",
+  "utc_offset": 3.0,
+  "unit": "C",
+  "start_utc": 15.0,
+  "end_utc": 17.0
+ },
+ {
+  "city": "Tokyo",
+  "tz": "Asia/Tokyo",
+  "utc_offset": 9.0,
+  "unit": "C",
+  "start_utc": 9.0,
+  "end_utc": 11.0
+ },
+ {
+  "city": "Toronto",
+  "tz": "America/Toronto",
+  "utc_offset": -4.0,
+  "unit": "C",
+  "start_utc": 22.0,
+  "end_utc": 0.0
+ },
+ {
+  "city": "Warsaw",
+  "tz": "Europe/Warsaw",
+  "utc_offset": 2.0,
+  "unit": "C",
+  "start_utc": 16.0,
+  "end_utc": 18.0
+ },
+ {
+  "city": "Wellington",
+  "tz": "Pacific/Auckland",
+  "utc_offset": 12.0,
+  "unit": "C",
+  "start_utc": 6.0,
+  "end_utc": 8.0
+ },
+ {
+  "city": "Wuhan",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ },
+ {
+  "city": "Zhengzhou",
+  "tz": "Asia/Shanghai",
+  "utc_offset": 8.0,
+  "unit": "C",
+  "start_utc": 10.0,
+  "end_utc": 12.0
+ }
+]

@@ -1,0 +1,194 @@
+{
+ "London": [
+  "EGLC",
+  "C"
+ ],
+ "Paris": [
+  "LFPB",
+  "C"
+ ],
+ "Seoul (Incheon)": [
+  "RKSI",
+  "C"
+ ],
+ "Ankara": [
+  "LTAC",
+  "C"
+ ],
+ "Wellington": [
+  "NZWN",
+  "C"
+ ],
+ "Lucknow": [
+  "VILK",
+  "C"
+ ],
+ "Munich": [
+  "EDDM",
+  "C"
+ ],
+ "Tel Aviv": [
+  "LLBG",
+  "C"
+ ],
+ "Tokyo": [
+  "RJTT",
+  "C"
+ ],
+ "Shanghai": [
+  "ZSPD",
+  "C"
+ ],
+ "Singapore": [
+  "WSSS",
+  "C"
+ ],
+ "Milan": [
+  "LIMC",
+  "C"
+ ],
+ "Madrid": [
+  "LEMD",
+  "C"
+ ],
+ "Warsaw": [
+  "EPWA",
+  "C"
+ ],
+ "Chongqing": [
+  "ZUCK",
+  "C"
+ ],
+ "Beijing": [
+  "ZBAA",
+  "C"
+ ],
+ "Wuhan": [
+  "ZHHH",
+  "C"
+ ],
+ "Chengdu": [
+  "ZUUU",
+  "C"
+ ],
+ "Shenzhen": [
+  "ZGSZ",
+  "C"
+ ],
+ "Moscow": [
+  "UUWW",
+  "C"
+ ],
+ "Istanbul": [
+  "LTFM",
+  "C"
+ ],
+ "Busan": [
+  "RKPK",
+  "C"
+ ],
+ "Amsterdam": [
+  "EHAM",
+  "C"
+ ],
+ "Helsinki": [
+  "EFHK",
+  "C"
+ ],
+ "Kuala Lumpur": [
+  "WMKK",
+  "C"
+ ],
+ "Jeddah": [
+  "OEJN",
+  "C"
+ ],
+ "Cape Town": [
+  "FACT",
+  "C"
+ ],
+ "Guangzhou": [
+  "ZGGG",
+  "C"
+ ],
+ "Qingdao": [
+  "ZSQD",
+  "C"
+ ],
+ "Karachi": [
+  "OPKC",
+  "C"
+ ],
+ "Manila": [
+  "RPLL",
+  "C"
+ ],
+ "Chicago": [
+  "KORD",
+  "F"
+ ],
+ "Denver": [
+  "KBKF",
+  "F"
+ ],
+ "New York City": [
+  "KLGA",
+  "F"
+ ],
+ "Dallas": [
+  "KDAL",
+  "F"
+ ],
+ "Atlanta": [
+  "KATL",
+  "F"
+ ],
+ "Miami": [
+  "KMIA",
+  "F"
+ ],
+ "Austin": [
+  "KAUS",
+  "F"
+ ],
+ "Houston": [
+  "KHOU",
+  "F"
+ ],
+ "Seattle": [
+  "KSEA",
+  "F"
+ ],
+ "Los Angeles": [
+  "KLAX",
+  "F"
+ ],
+ "San Francisco": [
+  "KSFO",
+  "F"
+ ],
+ "Sao Paulo": [
+  "SBGR",
+  "C"
+ ],
+ "Buenos Aires": [
+  "SAEZ",
+  "C"
+ ],
+ "Toronto": [
+  "CYYZ",
+  "C"
+ ],
+ "Mexico City": [
+  "MMMX",
+  "C"
+ ],
+ "Panama City": [
+  "MPMG",
+  "C"
+ ],
+ "Zhengzhou": [
+  "ZHCC",
+  "C"
+ ]
+}
