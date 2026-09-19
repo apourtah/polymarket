@@ -67,14 +67,15 @@ def render(rows, wallet=None, include_resolved=False):
     out.append(f"{D}{'city / day':<22}{'bucket':<12}{'shares':>8}{'cost':>8}{'avg':>7}{'bid':>7}{'mid':>7}{'value':>8}{'P&L':>9}  {'obs high':<12}{'models (E/R)':<14}{'why':<9}{'status'}{N}")
     for r in sorted(rows, key=lambda x: (x["day"], x["city"])):
         m = market_info(r["cid"]) if r["cid"] else None
-        bucket = r["question"].split(" be ", 1)[1].split(" on")[0].replace("between ", "")
+        bucket = r["question"].split(" be ", 1)[1].split(" on")[0].replace("between ", "") + (" NO" if r["why"].startswith("no_") else "")
         tz = ZoneInfo(TZ[r["city"]]); local = now.astimezone(tz)
         resolved = bool(m and m.get("closed") and m.get("outcomePrices"))
+        is_no = r["why"].startswith("no_")                                  # NO leg: holds the NO token, pays when the bucket loses
         if resolved:
-            yes = float(json.loads(m["outcomePrices"])[0]); val = r["shares"] * yes; pnl = val - r["usd"]; tot_real += pnl; status = f"{G}WON{N}" if yes == 1 else f"{R}LOST{N}"; bid = mid = yes
+            yes = float(json.loads(m["outcomePrices"])[0]); px = 1 - yes if is_no else yes; val = r["shares"] * px; pnl = val - r["usd"]; tot_real += pnl; status = f"{G}WON{N}" if px == 1 else f"{R}LOST{N}"; bid = mid = px
             if not include_resolved: continue
         else:
-            tok = json.loads(m["clobTokenIds"])[0] if m and m.get("clobTokenIds") else None
+            tok = json.loads(m["clobTokenIds"])[1 if is_no else 0] if m and m.get("clobTokenIds") else None
             bid, mid = book(tok) if tok else (None, None); mark = bid if bid is not None else (mid or 0)
             val = r["shares"] * mark; pnl = val - r["usd"]; tot_cost += r["usd"]; tot_val += val
             status = f"{Y}open{N} ({local.strftime('%H:%M')} local)" if local.date() <= r["day"] else f"{Y}awaiting resolution{N}"

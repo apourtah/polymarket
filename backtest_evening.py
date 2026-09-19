@@ -107,7 +107,7 @@ def yes_price(m, ts):
     if i<0 or ts-hs[i]['t']>2*3600: return None
     p=hs[i]['p']; return p if h['losing_outcome']=='Yes' else 1-p
 # ---------- walk-forward, nightly refit like the bot ----------
-trades=[]; nights=[]
+trades=[]; nights=[]; allb=[]   # allb: every priced bucket per night (for legs_backtest.py)
 for d in sorted(P[(P.mday>=START)&(P.mday<=END)].mday.unique()):
     H=P[P.mday<d].dropna(subset=['err'])
     if len(H)<C.MIN_HISTORY_DAYS: continue
@@ -122,6 +122,9 @@ for d in sorted(P[(P.mday>=START)&(P.mday<=END)].mday.unique()):
         buckets=list(prices); Pe=bucket_probs(mu_e,p['ewma_sd'],buckets); Pr=bucket_probs(mu_r,p['ridge_sd'],buckets)
         be,br=max(Pe,key=Pe.get),max(Pr,key=Pr.get); agree=be==br
         nights.append(dict(city=c,mday=d,agree=agree,win_lo=r.actual-r.actual%2,be=be[0],br=br[0],p_be=prices[be],p_br=prices[br],pe_be=Pe[be],pr_br=Pr[br],pav_be=(Pe[be]+Pr[be])/2,pav_br=(Pe[br]+Pr[br])/2))
+        fav=max(prices,key=prices.get)
+        for b in buckets:
+            allb.append(dict(city=c,mday=d,lo=b[0],hi=b[1],price=prices[b],pe=Pe[b],pr=Pr[b],won=[float(x) for x in bk[b]['outcome_prices']]==[1.0,0.0],agree=agree,be=be[0],br=br[0],fav=fav[0],fav_p=prices[fav],win_lo=r.actual-r.actual%2))
         spent=0.0
         for b in buckets:
             ask=prices[b]+SLIP; pav=(Pe[b]+Pr[b])/2; why=None
@@ -136,7 +139,7 @@ for d in sorted(P[(P.mday>=START)&(P.mday<=END)].mday.unique()):
             if stake<C.MIN_ORDER_SHARES*ask: continue
             spent+=stake; sh=stake/ask; won=[float(x) for x in bk[b]['outcome_prices']]==[1.0,0.0]; fee=0.05*ask*(1-ask)*sh
             trades.append(dict(city=c,mday=d,bucket=b,why=why,price=ask,P=pav,edge=edge,stake=stake,won=won,pnl=(sh-stake if won else -stake)-fee))
-T=pd.DataFrame(trades); N=pd.DataFrame(nights); T.to_parquet('out/backtest_evening_trades.parquet'); N.to_parquet('out/backtest_evening_nights.parquet')
+T=pd.DataFrame(trades); N=pd.DataFrame(nights); T.to_parquet('out/backtest_evening_trades.parquet'); N.to_parquet('out/backtest_evening_nights.parquet'); pd.DataFrame(allb).to_parquet('out/backtest_evening_buckets.parquet')
 def summ(t): return pd.Series(dict(n=len(t),win=t.won.mean(),avg_px=t.price.mean(),stake=t.stake.sum(),pnl=t.pnl.sum(),roi=t.pnl.sum()/t.stake.sum() if len(t) else np.nan))
 print(f"\n=== production rule, {START}..{END}, cities {TRADE}, entry mid at 21:{ENTRY_MIN:02d} local evening before, slip {SLIP:.2f}")
 print(f"nights evaluated: {len(N)}  agree share {N.agree.mean():.0%}  EWMA-bucket hit {(N.be==N.win_lo).mean():.3f}  ridge hit {(N.br==N.win_lo).mean():.3f}")

@@ -13,14 +13,21 @@ MODEL_MIN_PRICE = 0.05
 WINDOW = (21, 23)                 # act while local hour in [21, 23)
 EVAL_HOURS = [21, 22]             # evaluate at these local hours (re-evaluates if a newer HRRR run appeared)
 # --- rule (from the walk-forward lab) ---
-AGREE_MIN_PRICE = 0.35            # agreement day: buy the agreed bucket only if this <= YES ask <= AGREE_MAX_PRICE
-AGREE_MAX_PRICE = 0.60
+AGREE_MIN_PRICE = 0.10            # agreement day: buy the agreed bucket only if this <= YES ask <= AGREE_MAX_PRICE
+AGREE_MAX_PRICE = 0.50            # 2026-09-19: was 0.35-0.60; legs_backtest.py: 0.50-0.60 bin +9%, 0.30-0.35 +55%, 0.10-0.30 +3..15%
 DISAGREE_EDGE = 0.10              # "edge" mode only: buy every bucket where avg(P_ewma, P_ridge) - ask >= this
 DISAGREE_MAX_PRICE = 0.075
+# --- NO leg (rule "H", no_compare.py, 2026-09-19): only on nights where a disagree-model YES leg (dis_ridge / dis_ewma) fired.
+#   A: NO on the market favorite if it is WARMER than our YES bucket;  B: in ridge-mode cities, NO on the bucket 1 warmer
+#   than the ridge pick.  Either way only if that bucket's YES ask is in [NO_LEG_MIN_YES, NO_LEG_MAX_YES] (NO entry ~0.46-0.66).
+#   Backtest Jan18-Sep15 (35-55c): 76 nights, 84% win, +40%, 0 negative months. NO-fav paired with an agree-leg YES is ~0 -> not traded.
+NO_LEG = True
+NO_LEG_MIN_YES = 0.35; NO_LEG_MAX_YES = 0.55   # 0.30-0.35 was a coin-flip on fees (NO at ~69c, 72% win); 0.35-0.55: 76 nights, 84% win, +40%
+NO_LEG_SHARE_MATCH = True         # size the NO leg to the YES leg's share count (the 0xdd22 sizing); else STAKE
 STAKE = 10.0                      # $ per bucket ("edge" mode: doubled when edge >= 2x DISAGREE_EDGE)
 MAX_PER_MARKET_USD = 20.0
-MAX_PER_CITY_DAY_USD = 20.0
-MAX_DAILY_USD = 80.0
+MAX_PER_CITY_DAY_USD = 35.0       # YES leg + share-matched NO leg
+MAX_DAILY_USD = 120.0
 MIN_ORDER_SHARES = 5
 AUTO_REDEEM = True                # if a wallet's free USDC can't fund an order, redeem its resolved winners first (bot/redeem.py; gas = POL from the EOA)
 CASH_RESERVE = 2.0                # keep this much USDC free after funding an order

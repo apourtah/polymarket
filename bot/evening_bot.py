@@ -181,7 +181,7 @@ class Bot:
                 out = {}
                 for m in e["markets"]:
                     b = parse_bucket(m["question"]); toks = json.loads(m.get("clobTokenIds") or "[]")
-                    if b and len(toks) == 2: out[b] = dict(yes_token=toks[0], cid=m["conditionId"], question=m["question"])
+                    if b and len(toks) == 2: out[b] = dict(yes_token=toks[0], no_token=toks[1], cid=m["conditionId"], question=m["question"])
                 return out
         return {}
     def best_ask(self, token):
@@ -228,33 +228,51 @@ class Bot:
         F = pd.read_parquet(C.FORECASTS) if os.path.exists(C.FORECASTS) else pd.DataFrame()
         F = pd.concat([F[~((F.city == city) & (F.mday.astype(str) == str(target)))] if len(F) else F, pd.DataFrame([dict(city=city, mday=pd.Timestamp(target), run=run_id, **feats)])], ignore_index=True); F.to_parquet(C.FORECASTS)
         # decide
-        orders = []; modes = C.MODES.get(city, {"agree", "edge"})
+        orders = []; modes = C.MODES.get(city, {"agree", "edge"}); yes_ask = {}
         for b in buckets:
             asks = self.best_ask(mk[b]["yes_token"]); 
             if not asks: continue
-            ask = asks[0][0]; pav = (Pe[b] + Pr[b]) / 2
-            if agree and "agree" in modes and b == be and C.AGREE_MIN_PRICE <= ask <= C.AGREE_MAX_PRICE: orders.append((b, ask, asks, "agree", Pe[b], Pr[b]))
-            elif not agree and "edge" in modes and pav - ask >= C.DISAGREE_EDGE and ask <= C.DISAGREE_MAX_PRICE: orders.append((b, ask, asks, "disagree", Pe[b], Pr[b]))
-            elif not agree and "ridge" in modes and b == br and C.MODEL_MIN_PRICE <= ask <= C.MODEL_MAX_PRICE: orders.append((b, ask, asks, "dis_ridge", Pe[b], Pr[b]))
-            elif not agree and "ewma" in modes and b == be and C.MODEL_MIN_PRICE <= ask <= C.MODEL_MAX_PRICE: orders.append((b, ask, asks, "dis_ewma", Pe[b], Pr[b]))
+            ask = asks[0][0]; pav = (Pe[b] + Pr[b]) / 2; yes_ask[b] = ask
+            if agree and "agree" in modes and b == be and C.AGREE_MIN_PRICE <= ask <= C.AGREE_MAX_PRICE: orders.append((b, ask, asks, "agree", Pe[b], Pr[b], mk[b]["yes_token"]))
+            elif not agree and "edge" in modes and pav - ask >= C.DISAGREE_EDGE and ask <= C.DISAGREE_MAX_PRICE: orders.append((b, ask, asks, "disagree", Pe[b], Pr[b], mk[b]["yes_token"]))
+            elif not agree and "ridge" in modes and b == br and C.MODEL_MIN_PRICE <= ask <= C.MODEL_MAX_PRICE: orders.append((b, ask, asks, "dis_ridge", Pe[b], Pr[b], mk[b]["yes_token"]))
+            elif not agree and "ewma" in modes and b == be and C.MODEL_MIN_PRICE <= ask <= C.MODEL_MAX_PRICE: orders.append((b, ask, asks, "dis_ewma", Pe[b], Pr[b], mk[b]["yes_token"]))
             time.sleep(0.05)
-        if not orders: log.info("%s: no bucket meets the rule (modes %s; best asks: %s)", city, sorted(modes), {b: round(self.best_ask(mk[b]['yes_token'])[0][0], 3) if self.best_ask(mk[b]['yes_token']) else None for b in [be, br]})
+        if not orders: log.info("%s: no bucket meets the rule (modes %s; best asks: %s)", city, sorted(modes), {b: round(yes_ask[b], 3) if b in yes_ask else None for b in [be, br]})
+        # NO leg (rule H): only alongside a disagree-model YES leg. A: NO on the favorite if warmer than our YES bucket;
+        # B: ridge cities, NO on the bucket 1 warmer than the ridge pick. That bucket's YES ask must be in [NO_LEG_MIN_YES, NO_LEG_MAX_YES].
+        dis_legs = [o for o in orders if o[3] in ("dis_ridge", "dis_ewma")]
+        if C.NO_LEG and dis_legs and yes_ask:
+            yb = dis_legs[0][0]; cands = {}
+            fav = max(yes_ask, key=yes_ask.get)
+            if fav[0] > yb[0]: cands[fav] = "no_fav"
+            if any(o[3] == "dis_ridge" for o in dis_legs):
+                nb = (br[0] + 2, br[1] + 2) if br[1] < 999 else None
+                if nb in yes_ask and nb not in cands: cands[nb] = "no_warm"
+            for b, why in cands.items():
+                if not (C.NO_LEG_MIN_YES <= yes_ask[b] <= C.NO_LEG_MAX_YES): log.info("%s: NO leg %s skipped, %s YES ask %.2f outside %.2f-%.2f", city, why, b, yes_ask[b], C.NO_LEG_MIN_YES, C.NO_LEG_MAX_YES); continue
+                nasks = self.best_ask(mk[b]["no_token"])
+                if nasks and nasks[0][0] <= 1 - C.NO_LEG_MIN_YES + 0.03: orders.append((b, nasks[0][0], nasks, why, Pe[b], Pr[b], mk[b]["no_token"]))
+                else: log.info("%s: NO leg %s skipped, %s NO ask %s", city, why, b, nasks[0][0] if nasks else None)
+            if not cands: log.info("%s: NO leg not applicable (favorite %s at %.2f not warmer than our %s)", city, fav, yes_ask[fav], yb)
         # decoy: occasionally a small buy on the 2nd-most-likely bucket (noise in the fill history)
         if random.random() < C.DECOY_PROB:
             ranked = sorted(buckets, key=lambda b: -(Pe[b] + Pr[b])); second = ranked[1] if len(ranked) > 1 else None
             if second and second not in [o[0] for o in orders]:
                 asks = self.best_ask(mk[second]["yes_token"])
-                if asks and asks[0][0] <= 0.5: orders.append((second, asks[0][0], asks, "decoy", Pe[second], Pr[second]))
-        t0 = time.time()
-        for b, ask, asks, why, pe, pr in orders:
+                if asks and asks[0][0] <= 0.5: orders.append((second, asks[0][0], asks, "decoy", Pe[second], Pr[second], mk[second]["yes_token"]))
+        t0 = time.time(); yes_stake = None
+        for b, ask, asks, why, pe, pr, token in orders:
             edge = (pe + pr) / 2 - ask
             stake = random.uniform(*C.DECOY_STAKE) if why == "decoy" else C.STAKE * (2 if (why == "disagree" and edge >= 2 * C.DISAGREE_EDGE) else 1) * random.uniform(*C.SIZE_JITTER)
+            if why.startswith("no_") and C.NO_LEG_SHARE_MATCH and yes_stake: stake = yes_stake[0] / yes_stake[1] * ask   # same share count as the YES leg
+            elif not why.startswith("no_") and why != "decoy": yes_stake = (stake, ask)
             room = min(C.MAX_PER_MARKET_USD - self.state["positions"].get(mk[b]["cid"], {}).get("usd", 0.0), C.MAX_PER_CITY_DAY_USD - st["usd"], C.MAX_DAILY_USD - self.daily_usd())
             stake = min(stake, room)
             if os.path.exists(C.KILL_FILE) or stake < C.MIN_ORDER_SHARES * ask: log.info("skip %s (%s): room $%.0f / kill", mk[b]["question"][40:80], why, room); continue
             n_child = random.randint(*C.CHILD_ORDERS); when = t0 + random.uniform(0, 3) * 60
             for i in range(n_child):
-                st["queue"].append(dict(cid=mk[b]["cid"], question=mk[b]["question"], token=mk[b]["yes_token"], bucket=list(b), why=why, pe=pe, pr=pr, city=city, target=str(target),
+                st["queue"].append(dict(cid=mk[b]["cid"], question=mk[b]["question"], token=token, bucket=list(b), why=why, pe=pe, pr=pr, city=city, target=str(target),
                                         wallet=(self.pick_wallet(city, target, why) if C.WALLET_MODE == "per_signal" else st["wallet"]),
                                         usd=stake / n_child, place_at=when, rest_min=random.uniform(*C.REST_MIN), status="queued", order_id=None, price=None, shares=0.0))
                 when += random.uniform(*C.CHILD_GAP_MIN) * 60

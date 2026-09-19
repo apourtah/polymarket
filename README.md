@@ -19,12 +19,18 @@ validate that bot.
 3. **Bucket probabilities** — each model's corrected max ± its recent residual SD → P(bucket).
 4. **Per-city rule** (`MODES` in `bot/evening_config.py`), chosen on an 8-month walk-forward backtest:
 
-   | city | models agree → buy the agreed bucket (35–60¢) | models disagree → buy … (5–60¢) |
+   | city | models agree → buy the agreed bucket (10–50¢) | models disagree → buy … (5–60¢) |
    |---|---|---|
    | Los Angeles, Austin | yes | EWMA's bucket |
    | Chicago | yes | ridge's bucket |
    | Houston, Dallas | — | ridge's bucket |
    | Seattle, Miami | yes | — |
+
+   **NO leg** (rule "H", from the 0xdd22 account's fill history; `legs_backtest.py`, `no_sweeps.py`, `no_compare.py`): only on
+   a night where a disagree-model YES leg fired — (A) NO on the market favorite if it is warmer than our YES bucket, and
+   (B) in ridge cities NO on the bucket one warmer than the ridge pick — when that bucket's YES price is 35–55¢ (NO bought at ~46–66¢), sized to the
+   YES leg's share count. Backtest: 76 nights, 84% win, +40%, 0 negative months. Fading the favorite next to an *agree* YES,
+   shorting the runner-up, or shorting buckets the models call overpriced all failed, as did every second-YES-bucket idea.
 
    Ridge cities are the ones where the day's max is set by the synoptic pattern; EWMA cities the ones
    with a stable station bias. NYC, Denver, SF, Atlanta showed no edge in either leg.
@@ -32,8 +38,8 @@ validate that bot.
    stop-losses) found nothing that beats holding: after the 21:00 entry the intraday price path is
    close to fair.
 
-Backtest, Jan 18 – Sep 16 2026, $50 clips, mids +1¢, taker fees, no fills below 5¢:
-**+$11.5k on $34k staked (+34%)**, every month positive, max drawdown −$613. The per-city split was
+Backtest, Jan 18 – Sep 15 2026, $50 clips, mids +1¢, taker fees, no fills below 5¢: YES legs **+$12.0k on $36k (+34%)**,
+NO leg +$1.5k on $5.4k (+29%), every month positive (`legs_backtest.py`, `no_compare.py`). The per-city split was
 selected on the same data, so plan on ~+20–25%. Resolution rule (max over hourly METARs, T-group tenths
 → °F, half-up) verified against 606/608 resolved markets.
 
@@ -93,7 +99,9 @@ round_robin / per_day). Redeem at irregular times.
 | `bot/evening_bot.py`, `bot/evening_config.py` | the bot and every knob (rule, sizing, camouflage, wallets) |
 | `bot/redeem.py` | on-chain redemption for EOA / Magic-proxy / Safe wallets; balance check |
 | `bot/positions.py` | positions CLI (`--watch`, `--paper`, `--wallet`, `--redeem`) |
-| `backtest_evening.py` | walk-forward backtest of the production rule (env: `START END CITIES POOL MODES MIN_PX SLIP` + rule overrides) |
+| `backtest_evening.py` | walk-forward backtest of the YES rule (env: `START END CITIES POOL MODES MIN_PX SLIP` + rule overrides); dumps every priced bucket per night to `out/backtest_evening_buckets.parquet` |
+| `legs_backtest.py`, `no_sweeps.py`, `no_neighbor_sweep.py`, `no_compare.py`, `no_leg_test.py` | leg tests on that dump: YES band, extra YES buckets, NO on favorite / neighbours / runner-up, rule comparison |
+| `daybefore_backtest.py`, `fetch_hrrr_daybefore.py` | day-before forecasts (12Z/18Z NBM, GFS-MOS, HRRR) vs day-before prices — no edge found with MOS |
 | `exit_sweep.py` | take-profit / stop-loss sweep on backtest trades |
 | `correction_lab.py`, `low_lab.py`, `low_market.py` | model comparison lab; the (rejected) lowest-temperature variant |
 | `fetch_hrrr*.py`, `fetch_metar.py`, `fetch_markets.py`, `fetch_prices.py` | data archives → `data/` (git-ignored, ~5 GB) |
