@@ -14,7 +14,7 @@ WINDOW = (21, 23)                 # act while local hour in [21, 23)
 EVAL_HOURS = [21, 22]             # evaluate at these local hours (re-evaluates if a newer HRRR run appeared)
 # --- rule (from the walk-forward lab) ---
 AGREE_MIN_PRICE = 0.10            # agreement day: buy the agreed bucket only if this <= YES ask <= AGREE_MAX_PRICE
-AGREE_MAX_PRICE = 0.50            # 2026-09-19: was 0.35-0.60; legs_backtest.py: 0.50-0.60 bin +9%, 0.30-0.35 +55%, 0.10-0.30 +3..15%
+AGREE_MAX_PRICE = 0.53            # 2026-09-19: 0.35-0.60 -> 0.10-0.50 -> 0.10-0.53; 50-53c agree picks: 26 trades, 77% win, +43%; 53-60c negative (legs_backtest.py)
 DISAGREE_EDGE = 0.10              # "edge" mode only: buy every bucket where avg(P_ewma, P_ridge) - ask >= this
 DISAGREE_MAX_PRICE = 0.075
 # --- NO leg (rule "H", no_compare.py, 2026-09-19): only on nights where a disagree-model YES leg (dis_ridge / dis_ewma) fired.

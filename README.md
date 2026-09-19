@@ -19,7 +19,7 @@ validate that bot.
 3. **Bucket probabilities** — each model's corrected max ± its recent residual SD → P(bucket).
 4. **Per-city rule** (`MODES` in `bot/evening_config.py`), chosen on an 8-month walk-forward backtest:
 
-   | city | models agree → buy the agreed bucket (10–50¢) | models disagree → buy … (5–60¢) |
+   | city | models agree → buy the agreed bucket (10–53¢) | models disagree → buy … (5–60¢) |
    |---|---|---|
    | Los Angeles, Austin | yes | EWMA's bucket |
    | Chicago | yes | ridge's bucket |
