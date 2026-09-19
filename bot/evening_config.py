@@ -8,7 +8,7 @@ DRY_RUN = os.environ.get("BOT_DRY_RUN", "1") != "0"
 MODES = {"Los Angeles": {"agree", "ewma"}, "Austin": {"agree", "ewma"}, "Chicago": {"agree", "ridge"},
          "Houston": {"ridge"}, "Dallas": {"ridge"}, "Seattle": {"agree"}, "Miami": {"agree"}}
 CITIES = list(MODES)              # NYC/Denver/SF/Atlanta excluded (no edge in either leg)
-MODEL_MAX_PRICE = 0.60            # ridge/ewma disagreement buys: YES ask <= this (and >= 0.05 implicitly via the book)
+MODEL_MAX_PRICE = 0.45            # ridge/ewma disagreement buys: YES ask <= this. 2026-09-19: 0.60 -> 0.45 (45-60c picks net $0 on $2.4k; 45-50c -13%)
 MODEL_MIN_PRICE = 0.05
 WINDOW = (21, 23)                 # act while local hour in [21, 23)
 EVAL_HOURS = [21, 22]             # evaluate at these local hours (re-evaluates if a newer HRRR run appeared)
