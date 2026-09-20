@@ -1,7 +1,7 @@
 # Polymarket weather — evening HRRR bot
 
 A bot that trades Polymarket's daily **"Highest temperature in \<city\>"** markets the evening before,
-in the window (21:00–23:00 local) where the 00Z HRRR run is out but the market has not yet fully
+in the window (21:00 local, open until 01:00 so a late restart still trades) where the 00Z HRRR run is out but the market has not yet fully
 absorbed it. Two bias-corrected forecasts vote on the winning 2°F bucket; the bot buys YES where the
 backtest says that vote has an edge, holds to resolution, and disguises its footprint.
 

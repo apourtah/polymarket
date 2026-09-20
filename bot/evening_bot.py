@@ -132,6 +132,14 @@ class Models:
 def bucket_probs(mu, sd, buckets):
     return {b: norm.cdf((min(b[1], 200) + 0.5 - mu) / sd) - norm.cdf((max(b[0], -200) - 0.5 - mu) / sd) for b in buckets}
 
+def window_pos(now):
+    """Minutes since the window opened at WINDOW[0] local, or None if outside. The window may cross midnight
+    (WINDOW = (21, 25) means 21:00 -> 01:00 next day); the target market day is always the day after the 21:00 opening."""
+    start, end = C.WINDOW; h = now.hour + now.minute / 60
+    if start <= h < min(end, 24): return int((h - start) * 60), (now + dt.timedelta(days=1)).date()
+    if end > 24 and h < end - 24: return int((h + 24 - start) * 60), now.date()
+    return None
+
 # ---------------------------------------------------------------- bot
 class Bot:
     def __init__(self):
@@ -232,15 +240,16 @@ class Bot:
     # ---- one city evening ----
     def evaluate(self, city):
         import random
-        tz = ZoneInfo(TZ[city]); now = dt.datetime.now(tz); target = (now + dt.timedelta(days=1)).date()
-        key = f"{city}|{target}"
+        tz = ZoneInfo(TZ[city]); now = dt.datetime.now(tz); wp = window_pos(now)
+        if wp is None: return
+        minutes_in, target = wp; key = f"{city}|{target}"
         if key not in self.state["done"]:
             skip = random.random() < C.SKIP_PROB; start = random.randint(*C.START_JITTER_MIN); wallet = self.pick_wallet(city, target)
             self.state["done"][key] = {"runs": [], "usd": 0.0, "skip": skip, "start_min": start, "wallet": wallet, "queue": []}
             log.info("%s %s: plan -> %s, start +%d min, wallet #%d (mode %s)", city, target, "SKIP (camouflage)" if skip else "trade", start, wallet, C.WALLET_MODE); self.save()
         st = self.state["done"][key]
         if st["skip"]: return
-        if (now.hour - C.WINDOW[0]) * 60 + now.minute < st["start_min"]: return
+        if minutes_in < st["start_min"]: return
         if target.strftime("%Y%m%d") + "00" in st["runs"]: return           # this target's 00Z run already evaluated
         H = self.history()
         if len(H) < C.MIN_HISTORY_DAYS: log.warning("history too short (%d)", len(H)); return
@@ -327,7 +336,7 @@ class Bot:
             for o in st.get("queue", []):
                 if o["status"] not in ("queued", "resting"): continue
                 tz = ZoneInfo(TZ[o["city"]]); target = dt.date.fromisoformat(o["target"]); now_l = dt.datetime.now(tz)
-                window_end = dt.datetime(target.year, target.month, target.day, C.WINDOW[1], tzinfo=tz) - dt.timedelta(days=1)   # 23:00 local the evening before
+                window_end = dt.datetime(target.year, target.month, target.day, 0, tzinfo=tz) - dt.timedelta(days=1) + dt.timedelta(hours=C.WINDOW[1])   # end of the window that targets this day
                 if now_l < window_end + dt.timedelta(minutes=30): continue
                 if o["status"] == "resting" and not C.DRY_RUN and o.get("order_id"):
                     try:
@@ -404,8 +413,7 @@ class Bot:
                 if now.hour >= 9 and getattr(self, "_last_backfill", None) != now.date(): self.backfill_history()   # daily, once every US city is past local midnight
                 self.score_pending()
                 for city in C.CITIES:
-                    tz = ZoneInfo(TZ[city]); h = dt.datetime.now(tz).hour
-                    if C.WINDOW[0] <= h < C.WINDOW[1]: self.evaluate(city)
+                    if window_pos(dt.datetime.now(ZoneInfo(TZ[city]))) is not None: self.evaluate(city)
                 self.manage_orders()
             except Exception as ex: log.exception("loop error: %s", ex)
             time.sleep(C.LOOP_SECONDS)
