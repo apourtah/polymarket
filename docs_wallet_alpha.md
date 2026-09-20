@@ -148,3 +148,22 @@ neo7777 −21 % / −28 %; sailor82 +3 % / −3 %.
    are the slow forecast-model traders (0x9506, Weather-Guru, 0xdd22, +13–19 % delayed), whose picks are the ones our own
    model already makes.
 3. The id-free "informed flow" detector is exactly break-even: the tape does not carry a free signal beyond price.
+
+## Part 3 — copy only what does not move the market (`wallet_copy_lowimpact.py`)
+
+Impact per fill = move of the next print (≥60 s later) in the direction of the trade. In these thin books 50–82 % of every
+wallet's fills are followed by a print ≥1¢ away; only 2 of 25 train-period alpha wallets have ≤50 % (IngressDefender,
+PintouOClima). Test Aug 28–Sep 18, $10 clips at the next print:
+
+| selection | clips | ROI |
+|---|---|---|
+| all alpha ids | 4,711 | −8 % |
+| low-impact alpha wallets only | 307 | −5 % |
+| alpha ids, copy only fills whose next print is unchanged (0¢) | 1,649 | **−15 %** |
+| … within 1¢ / 2¢ | 3,497 / 4,004 | −18 % / −13 % |
+| low-impact wallets AND unchanged print | 135 | −8 % |
+| any wallet, unchanged print (baseline) | 26,364 | −14 % |
+
+Filtering on "the price did not move after their fill" selects the *uninformative* fills — when the market did not react, the
+market disagreed and was usually right. The impact IS the information; you cannot keep one without the other. Copying is
+closed as a line of research.
