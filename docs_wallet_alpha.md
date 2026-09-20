@@ -167,3 +167,12 @@ PintouOClima). Test Aug 28–Sep 18, $10 clips at the next print:
 Filtering on "the price did not move after their fill" selects the *uninformative* fills — when the market did not react, the
 market disagreed and was usually right. The impact IS the information; you cannot keep one without the other. Copying is
 closed as a line of research.
+
+## Part 4 — select on (alpha × low impact), copy every fill (`wallet_copy_all.py`)
+
+74 train-period alpha candidates (≥8 markets, ≥6 days, P&L > $200, t > 0.8), ranked by four impact measures (share of fills
+followed by a ≥1¢ move, mean/median directional move, $-weighted move). Every selection, copying **all** fills at the +60 s
+print in the test period, is negative: −1 % to −4 % for the broad cuts, −7 % to −17 % as the alpha filter tightens
+(t ≥ 2.5 & moved ≤ 0.5: 8 wallets, −17 %). Mirroring their dollar size (cap $50/fill): −9 %. The lowest-impact "alpha" wallets
+are the market-making and farm bots (donthackme, highstakebet, Mysaria, the May-15 farm): 2–5k fills each in three weeks,
+0 % to −1 % copied — their train-period P&L was noise on volume. Nothing in the (alpha, impact) plane is copyable.
