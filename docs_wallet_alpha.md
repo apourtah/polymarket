@@ -176,3 +176,31 @@ print in the test period, is negative: −1 % to −4 % for the broad cuts, −7
 (t ≥ 2.5 & moved ≤ 0.5: 8 wallets, −17 %). Mirroring their dollar size (cap $50/fill): −9 %. The lowest-impact "alpha" wallets
 are the market-making and farm bots (donthackme, highstakebet, Mysaria, the May-15 farm): 2–5k fills each in three weeks,
 0 % to −1 % copied — their train-period P&L was noise on volume. Nothing in the (alpha, impact) plane is copyable.
+
+## Part 5 — the grinders, reverse-engineered (`grinders.py`)
+
+| wallet | what they do | evidence | economics |
+|---|---|---|---|
+| **anonymous5474495** | sells the cold tail: NO at ~93¢ (YES 5–15¢) on buckets 1–3 *cooler* than the favorite, 78 % of $ the evening before | 1,100 of 1,167 fills are BUY NO; 67 % of fills on cooler buckets; 87 % fill win; P&L +$2.8k from the −1 bucket | +4.7 % on $74k, 79 % positive days, worst −$222 |
+| **sailor82** (+ 7 satellite wallets) | same tail-selling at 92¢ NO across all buckets 2 away from the favorite, 00–09 local on the day, in bursts (48 % of fills < 5 s apart, 136 fills/day), plus YES at ~41¢ near the favorite | 3,563 BUY NO / 2,190 BUY YES; 75 % of events both sides; 70 % fill win | +2.7 % on $295k, 60 % positive days, **worst day −$4.8k** (tails hit) |
+| **neo7777** | warm tilt in size ($114 median): NO at 74¢ on the bucket 1 cooler than the favorite (+$6.3k) and YES on the bucket 1 warmer (+$5.0k), 65 % of $ the evening before, 03–09 local | 220 events, 3 fills/event, 62 % both sides; 122 of 500 markets round-tripped (+$2.1k spread) | +4.1 % on $221k, 53 % positive days, worst −$2.7k |
+| **0x122cb9** | cross-book arbitrage bot: buys YES and NO of the *same* bucket when YES+NO < $1 (437 of 861 markets both sides, 276 locked below $1, median 4¢ per pair) and flips inventory within ~100 min (3,430 buys at 0.47 avg, 3,164 sells at 0.56) | 173 fills/day at $4 median; 25 % of events end riskless; 99 % both sides | +6 % on $67k = **$102/day**, 85 % positive days, worst −$342 |
+| **Rexc8** | late-day certainty: buys YES at 96–98¢ on the bucket holding the day's running max after 15:00–21:00 local, 72 % of events riskless, sells/holds to $1 | 79 % of fills are the favorite = eventual winner; 48 % of fills right after a print | +1.3 % on $54k, **100 % positive days**, $17/day |
+| sleeper-service | bursts (80 % of fills < 5 s apart): long the favorite at ~50¢ + short both neighbours at ~78¢ NO, 00–12 local | 97 % both sides, 0 % day-before | +4.1 % on $62k, 51 % positive days — noise |
+| HighTempTation | print sniper (Part 1) | 78 % of fills in minutes :53–:01 | +3.1 % on $89k, 100 % positive days |
+
+**Do the grinder patterns hold on our 8-month data (21:35 mids)?** Winner-vs-favorite is symmetric over Jan–Sep (21 % above,
+20 % below; the six-week window was warm-skewed 28/20, which is why the cold-tail sellers looked good lately). NO on the bucket 1
+cooler than the favorite: **+2 % at YES 3–15¢** (n=368, 92–97 % win) and −2 % to −8 % at 15–45¢; the −2 bucket at 3–15¢ ≈ 0 %.
+YES on the bucket 1 warmer: −13 % / −17 % at 10–30¢, +9 % at 30–40¢. Late-day sweep (six-week tapes): the bucket holding the
+running max is already at 96–99¢ by 17:00; buying it at the next print earns ≈0 % overall, **+2 % on the 95–98¢ subset after
+17:00 (n=83, 100 % win)** — Rexc8's niche exactly.
+
+**What is replicable, and is it worth it?**
+* Tail-selling is a thin-margin volume business with fat left tails (sailor82's −$4.8k day); at our size the 3–15¢ tails
+  earn +2 % on capital that is tied up overnight — no.
+* Late-day certainty (95–98¢ after 17:00 local, ≥18:00 to be safe) is a riskless-ish 1–2 % on cash parked for ~5 h; only
+  interesting as cash management for a large float, and depth at those levels is thin.
+* Cross-book arbitrage needs a low-latency CLOB bot watching YES/NO asks in ~1,000 markets; $100/day for that wallet.
+* Their common structural edge — trading *both sides* of an event around the favorite and recycling capital daily — is a
+  market-making business, not a forecasting one. It is orthogonal to our edge and does not improve the evening bot.
