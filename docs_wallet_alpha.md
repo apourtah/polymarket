@@ -204,3 +204,44 @@ running max is already at 96–99¢ by 17:00; buying it at the next print earns 
 * Cross-book arbitrage needs a low-latency CLOB bot watching YES/NO asks in ~1,000 markets; $100/day for that wallet.
 * Their common structural edge — trading *both sides* of an event around the favorite and recycling capital daily — is a
   market-making business, not a forecasting one. It is orthogonal to our edge and does not improve the evening bot.
+
+## Part 6 — did we find the real winners? Official P&L check (`fetch_realized.py`, `fetch_official_pnl.py`, `real_winners.py`, `makers.py`, `official_rank.py`)
+
+Hypothesis tested: the taker tape only shows aggressive "market movers"; the real winners (makers, patient exits) are invisible.
+Data: official P&L curves (user-pnl-api, all markets) for all 4,716 tape wallets with ≥3 fills, plus closed positions
+(data-api, 156,810 rows). Note: `closed-positions.realizedPnl` overstates P&L 2–10× for wallets that sell (e.g. opopv. $257k
+vs official $22.9k) — use the official curve; closed positions are used only for cost/volume and the weather share.
+
+**1. The taker leaderboard was right about who wins.** Among 1,218 weather-dominant wallets (≥85 % of cost in temperature
+markets, ≥10 markets, ≥8 days), 15 of the official top-25 were already in our taker top-30; the misses (V1nch0u, 0x496f76,
+newbie147, LowTempTation) are takers too (maker share ≤ 0.01) whose profits came from cities or exits our tape does not cover.
+Rank correlation official vs taker attribution 0.36 — low because of *coverage*, not because of makers.
+
+**2. Makers are the losers, not the winners.** Official 6-week P&L by maker share (weather-dominant wallets):
+
+| maker share | wallets | P&L | positive |
+|---|---|---|---|
+| 0–0.2 (takers) | 864 | **+$277k** | 44 % |
+| 0.2–0.5 | 118 | +$29k | 47 % |
+| 0.5–0.8 | 88 | −$33k | 42 % |
+| 0.8–1.0 (resting orders) | 148 | **−$67k** | 28 % |
+
+The resting-order crowd is the liquidity the informed takers eat. The exception is one genuine maker specialist, `opopv.`
+(maker share 0.95, +$22.9k, 100 % positive days): ~2,000 small resting bids a day on every bucket of every weather market
+worldwide (49 cities), YES avg 28¢ / NO avg 64¢, holds to $1 — a global passive value bot, and 809 fills in our 7 cities in
+2.5 days of which 2 were taker.
+
+**3. Where the taker attribution undercounted: breadth, not blindness.** fildoro official +$22.7k vs tape +$4.8k — but its
+weather cost is $162k across 41 cities and only $11.7k in our 7; HighTempTation $411k vs $47k; 0x9506 $158k vs $18k;
+TunSahur $119k vs $24k. The top wallets run the same strategy on 30–50 cities; our tape (7 US cities) saw 10–20 % of it.
+
+**4. So why did copying lose?** Because the winners *are* the movers: their fills carry the information, the next print is
+already worse, and 8 of 15 train-period winners reverted out of sample. Nothing in this part changes that result.
+
+**Official 6-week P&L, weather-dominant top-10:** Bilberry +$32.6k, HighTempTation +$27.8k, 0x9c95 +$24.3k, 0x9506 +$23.6k,
+fildoro +$22.7k, V1nch0u +$21.8k, huskyvs +$17.8k, 0x496f76 +$15.0k, TunSahur +$13.7k, sailor82 +$13.3k; 0xdd22 +$8.3k (#16).
+
+**The actionable lesson for us is breadth.** Our edge type (forecast-model taker at 30–55¢) is what the winners do; they do
+it in 40+ cities. Extending the evening bot from 7 to the ~45 listed cities (regional models per continent were parked
+earlier as "no translation" — that was tested on the 21:00 US inefficiency, not re-tested as a global taker book) is the
+one change this whole study points at.
