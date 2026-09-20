@@ -267,3 +267,22 @@ Conclusion: a limit at their price gets filled almost always — precisely when 
 exactly the fills that carried the edge. The only wallets that survive limit-copying are the slow forecast traders whose
 picks we already make (0x9506, Weather-Guru). Copy-trading is closed in all three execution styles (taker at next print,
 limit at their price, low-impact selection).
+
+## Part 8 — "so why not copy the slow traders?" (`wallet_copy_slow.py`)
+
+Because the three that copy well (0x9506, Weather-Guru, 0xdd22) were named *after* seeing the test period. Selected
+**ex-ante** on Aug 7–27 (≤ 6–12 fills/day, ≥10 markets, not print-driven, positive P&L, t ≥ 1–1.5), tested Aug 28 – Sep 18,
+$10 per first fill per market:
+
+| ex-ante profile | wallets | their ROI on those fills | copy at next print | limit at their price (fill rate) |
+|---|---|---|---|---|
+| loose (slow, positive) | 232 | −2.9 % | −1.9 % | −6.1 % (76 %) |
+| forecast profile (avg price 25–55¢, t ≥ 1.5, P&L > $500) | 2 | −8.6 % | −9.9 % | −16.8 % (92 %) |
+| strong (P&L > $1k, t ≥ 1.3) | 4 | +6.0 % | −4.7 % | −12.0 % (88 %) |
+| day-before buyers (≥50 % of fills the evening before) | 7 | +10.9 % | −2.3 % | −12.9 % (83 %) |
+
+fildoro — the one strong day-before trader that is selectable ex-ante — is +20.6 % at its own price, **+0.6 % at the next
+print and −6.7 % with a limit**: its edge is the minute it trades, not the bucket. None of the ex-ante slow sets is copyable.
+Overlap with our bot: only 10–14 % of the slow traders' fills are exactly our pick; on the city-nights where our bot has *no*
+trade, copying them returns −4 % to −15 %, so they do not fill our gaps either. With three weeks of selection data, 2–3
+copyable wallets out of ~20 candidates is what chance produces.
