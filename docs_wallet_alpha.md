@@ -245,3 +245,25 @@ fildoro +$22.7k, V1nch0u +$21.8k, huskyvs +$17.8k, 0x496f76 +$15.0k, TunSahur +$
 it in 40+ cities. Extending the evening bot from 7 to the ~45 listed cities (regional models per continent were parked
 earlier as "no translation" — that was tested on the 21:00 US inefficiency, not re-tested as a global taker book) is the
 one change this whole study points at.
+
+## Part 7 — copy with a resting LIMIT at the trader's price (`wallet_copy_limit.py`)
+
+Execution model: after a trader's first fill in a market we post a limit at exactly their price (bid for YES, or bid for NO at
+1−p when they went short) and leave it until resolution. From the taker tape, a YES bid at p is filled when a later taker
+sells YES / buys NO at p_yes < p ("strict"; ≤ p "incl", needs queue priority); mirror for NO bids. Aug 28 – Sep 18, 19 wallets
+(15 train-selected + the forecast-model group), 3,916 orders, $10 each.
+
+* **Fill rate 89 % (strict), 90 % incl. equal price; median time to fill 0.9 h.** Fills are easy because these books are thin and
+  prices oscillate — except the print snipers (HighTempTation 4 %: nobody sells to you at their price).
+* **But the fills are adversely selected**: orders whose bucket eventually LOST fill 96 % of the time, orders whose bucket WON
+  fill 83 %. The 11 % of orders that never fill would have returned **+49 %**; the ones that fill return **−10.8 %**.
+* P&L: their ROI on the same first fills (flat $10) −4.2 %; ours −10.8 % (−$3,754). Per wallet, ours vs theirs: 0x9506 +11 %
+  vs +12 % (fills 97 %), Weather-Guru +19 % vs +20 %, anonymous5474495 +4 % vs +6 %, fildoro −7 % vs +21 % (fills 84 %, median
+  wait 13.8 h — its edge is the timing), TunSahur −9 % vs +28 %, sailor82 −3 % vs +3 %, BeefSlayer −43 % vs −9 %,
+  Bilberry −23 % vs −17 %, dingdingdangdang −25 % vs −25 %.
+* By side: long-YES copies −22 % (their −12 %), NO-bid copies −1 % (their +2 %). By entry price: every band ≤ 0 except 65–80¢.
+
+Conclusion: a limit at their price gets filled almost always — precisely when the market disagrees with them — and misses
+exactly the fills that carried the edge. The only wallets that survive limit-copying are the slow forecast traders whose
+picks we already make (0x9506, Weather-Guru). Copy-trading is closed in all three execution styles (taker at next print,
+limit at their price, low-impact selection).
