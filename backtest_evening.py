@@ -93,7 +93,7 @@ def bucket(q):
     if mm.group(3): return (-999,int(mm.group(3)))
     if mm.group(4): return (int(mm.group(4)),999)
     return (int(mm.group(5)),int(mm.group(5)))
-ms=[m for m in json.load(open('data/markets.json')) if re.search(rf'highest temperature in ({"|".join(TRADE)}) be ', m['question'] or '') and m.get('closed')]
+ms=[m for m in json.load(open('data/markets.json')) if re.search(rf'highest temperature in ({"|".join(TRADE)}) be ', m['question'] or '') and (m.get('closed') or os.environ.get('INCLUDE_OPEN'))]   # INCLUDE_OPEN=1: also unresolved markets (won/pnl meaningless for them; see 'closed' in the bucket dump)
 mk={}
 for m in ms:
     city=re.search(r'temperature in (.+?) be ',m['question']).group(1); d=dt.date.fromisoformat(m['end_date'][:10])
@@ -124,7 +124,7 @@ for d in sorted(P[(P.mday>=START)&(P.mday<=END)].mday.unique()):
         nights.append(dict(city=c,mday=d,agree=agree,win_lo=r.actual-r.actual%2,be=be[0],br=br[0],p_be=prices[be],p_br=prices[br],pe_be=Pe[be],pr_br=Pr[br],pav_be=(Pe[be]+Pr[be])/2,pav_br=(Pe[br]+Pr[br])/2))
         fav=max(prices,key=prices.get)
         for b in buckets:
-            allb.append(dict(city=c,mday=d,lo=b[0],hi=b[1],price=prices[b],pe=Pe[b],pr=Pr[b],won=[float(x) for x in bk[b]['outcome_prices']]==[1.0,0.0],agree=agree,be=be[0],br=br[0],fav=fav[0],fav_p=prices[fav],win_lo=r.actual-r.actual%2))
+            allb.append(dict(city=c,mday=d,lo=b[0],hi=b[1],price=prices[b],pe=Pe[b],pr=Pr[b],won=[float(x) for x in bk[b]['outcome_prices']]==[1.0,0.0],closed=bool(bk[b].get('closed')),agree=agree,be=be[0],br=br[0],fav=fav[0],fav_p=prices[fav],win_lo=r.actual-r.actual%2))
         spent=0.0
         for b in buckets:
             ask=prices[b]+SLIP; pav=(Pe[b]+Pr[b])/2; why=None

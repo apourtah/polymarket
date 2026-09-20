@@ -69,10 +69,20 @@ def hrrr_afternoon_max(city, target_day, tz):
     return max(vals), run
 
 def openmeteo_fields(city, target_day, tz):
+    """Surface fields for the target afternoon from the Open-Meteo PREVIOUS-RUNS API (`*_previous_day1` = the run issued the
+    day before the valid hour), i.e. exactly what the history/backtest rows were built from (data/hrrr_wx_d1.parquet). At 21:00
+    local the day before, those runs all exist. Falls back to the current-run forecast API if the archive call fails."""
     st = SITE[city][0]; lat, lon = COORDS[st]
-    j = get_json(C.OPEN_METEO, {"latitude": lat, "longitude": lon, "hourly": "temperature_2m,dew_point_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,cloud_cover,shortwave_radiation,surface_pressure,precipitation",
-                                 "temperature_unit": "fahrenheit", "wind_speed_unit": "mph", "models": "gfs_hrrr", "timezone": tz.key, "forecast_days": 3})
-    h = pd.DataFrame(j["hourly"]); h["time"] = pd.to_datetime(h.time); h = h[h.time.dt.date == target_day]
+    V = ["temperature_2m", "dew_point_2m", "relative_humidity_2m", "wind_speed_10m", "wind_direction_10m", "cloud_cover", "shortwave_radiation", "surface_pressure", "precipitation"]
+    j = get_json("https://previous-runs-api.open-meteo.com/v1/forecast", {"latitude": lat, "longitude": lon, "hourly": ",".join(v + "_previous_day1" for v in V), "start_date": target_day.isoformat(), "end_date": target_day.isoformat(),
+                                                                          "models": "gfs_hrrr", "timezone": tz.key, "temperature_unit": "fahrenheit", "wind_speed_unit": "mph"})
+    if j and "hourly" in j and any(x is not None for x in j["hourly"].get("temperature_2m_previous_day1", [])):
+        h = pd.DataFrame({"time": pd.to_datetime(j["hourly"]["time"]), **{v: j["hourly"][v + "_previous_day1"] for v in V}})
+    else:
+        log.warning("%s: previous-runs API unavailable, using the current-run forecast for the surface fields", city)
+        j = get_json(C.OPEN_METEO, {"latitude": lat, "longitude": lon, "hourly": ",".join(V), "temperature_unit": "fahrenheit", "wind_speed_unit": "mph", "models": "gfs_hrrr", "timezone": tz.key, "forecast_days": 3})
+        h = pd.DataFrame(j["hourly"]); h["time"] = pd.to_datetime(h.time)
+    h = h[h.time.dt.date == target_day]
     a = h[h.time.dt.hour.between(11, 18)]; m = h[h.time.dt.hour.between(4, 8)]
     wd = np.degrees(np.arctan2(np.sin(np.radians(a.wind_direction_10m)).mean(), np.cos(np.radians(a.wind_direction_10m)).mean())) % 360
     return dict(dew=a.dew_point_2m.mean(), rhum=a.relative_humidity_2m.mean(), wind=a.wind_speed_10m.mean(), cloud=a.cloud_cover.mean(), rad=a.shortwave_radiation.mean(), pres=a.surface_pressure.mean(), precip=a.precipitation.sum(),
@@ -84,10 +94,15 @@ def metar_day_max_min(city, day, tz, hours=48):
     return (max(vals), min(vals)) if vals else (np.nan, np.nan)
 
 def mos_max(city, model, target_day, tz):
+    """Afternoon max from the latest 00Z (IEM stores older NBS runs as 01Z) MOS run issued before 21:00 local the day before —
+    the same run selection as the history/backtest rows (backtest_evening.py mos_daily)."""
     st = SITE[city][0]; now = dt.datetime.now(dt.timezone.utc)
-    r = requests.get(C.IEM_MOS, params={"station": st, "model": model, "sts": (now - dt.timedelta(hours=30)).strftime("%Y-%m-%dT%H:00Z"), "ets": now.strftime("%Y-%m-%dT%H:00Z"), "format": "csv"}, timeout=60)
+    r = requests.get(C.IEM_MOS, params={"station": st, "model": model, "sts": (now - dt.timedelta(hours=54)).strftime("%Y-%m-%dT%H:00Z"), "ets": now.strftime("%Y-%m-%dT%H:00Z"), "format": "csv"}, timeout=60)
     if r.status_code != 200 or len(r.text) < 100: return np.nan
     d = pd.read_csv(io.StringIO(r.text)); d["ftime"] = pd.to_datetime(d.ftime, utc=True); d["runtime"] = pd.to_datetime(d.runtime, utc=True)
+    cutoff = pd.Timestamp(dt.datetime(target_day.year, target_day.month, target_day.day, 21, tzinfo=tz) - dt.timedelta(days=1))
+    d = d[d.runtime.dt.hour.isin([0, 1]) & (d.runtime <= cutoff)]
+    if d.empty: return np.nan
     d = d[d.runtime == d.runtime.max()]; lt = d.ftime.dt.tz_convert(tz); d = d[(lt.dt.date == target_day) & lt.dt.hour.between(11, 18)]
     return pd.to_numeric(d.tmp, errors="coerce").max() if len(d) else np.nan
 
