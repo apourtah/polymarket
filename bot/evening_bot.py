@@ -188,6 +188,7 @@ class Bot:
         for r in F.itertuples():
             tz = ZoneInfo(TZ[r.city]); day = pd.Timestamp(r.mday).date(); now = dt.datetime.now(tz); key = (r.city, str(day))
             final = now.date() > day; provisional_ok = (now.date() == day and now.hour >= 21)
+            if (now.date() - day).days > 3: continue                        # too old for the 72 h METAR feed -> left to backfill
             if key in done and not done[key]: continue                    # already final
             if key in done and done[key] and not final: continue            # provisional and the day is not over yet
             if key not in done and not (final or provisional_ok): continue
@@ -319,12 +320,30 @@ class Bot:
         st["runs"].append(run_id); self.save()
 
     # ---- execution: resting limit 1 tick under the ask, then cross ----------------------------------------
-    def manage_orders(self):
-        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
-        now = time.time()
+    def expire_stale(self):
+        """After downtime: queued orders whose evening window is over are dropped; live resting orders that are still open on the
+        exchange are cancelled (fills that happened while offline are recorded first). Runs at startup and every loop."""
         for key, st in self.state["done"].items():
             for o in st.get("queue", []):
-                if o["status"] in ("filled", "cancelled", "abandoned"): continue
+                if o["status"] not in ("queued", "resting"): continue
+                tz = ZoneInfo(TZ[o["city"]]); target = dt.date.fromisoformat(o["target"]); now_l = dt.datetime.now(tz)
+                window_end = dt.datetime(target.year, target.month, target.day, C.WINDOW[1], tzinfo=tz) - dt.timedelta(days=1)   # 23:00 local the evening before
+                if now_l < window_end + dt.timedelta(minutes=30): continue
+                if o["status"] == "resting" and not C.DRY_RUN and o.get("order_id"):
+                    try:
+                        cl = self.wallet_client(o["wallet"]); got = float(cl.get_order(o["order_id"]).get("size_matched") or 0)
+                        if got > 0: self._fill(st, o, o["price"], got, final=False); log.info("offline fill recorded: %.2f sh %s", got, o["question"][40:80])
+                        cl.cancel(o["order_id"])
+                    except Exception as ex: log.warning("expire/cancel %s: %s", o["question"][40:80], ex)
+                o["status"] = "expired"; log.info("expired stale %s order: %s (%s)", o["why"], o["question"][40:80], key)
+        self.save()
+
+    def manage_orders(self):
+        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        now = time.time(); self.expire_stale()
+        for key, st in self.state["done"].items():
+            for o in st.get("queue", []):
+                if o["status"] in ("filled", "cancelled", "abandoned", "expired"): continue
                 asks = self.best_ask(o["token"])
                 if not asks: continue
                 ask, depth = asks[0][0], sum(sz for p_, sz in asks if p_ <= asks[0][0] + 0.01)
@@ -378,7 +397,7 @@ class Bot:
         log.info("FILL %s | %s | %.2f sh @ %.3f = $%.0f [wallet #%d, %s]", o["question"][40:], o["why"], shares, price, usd, o["wallet"], "DRY" if C.DRY_RUN else "LIVE")
 
     def run(self):
-        self.backfill_history()
+        self.expire_stale(); self.backfill_history()
         while True:
             try:
                 now = dt.datetime.now(dt.timezone.utc)

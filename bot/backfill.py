@@ -20,8 +20,9 @@ def log(*a): print(dt.datetime.now(dt.timezone.utc).strftime('%H:%M:%S'), 'backf
 def refresh_archives(d0, d1):
     """Pull HRRR 00Z, METAR, Open-Meteo previous-runs and MOS for d0..d1 into the data/ archives (all resumable)."""
     env = dict(os.environ, HRRR_START=str(d0), HRRR_END=str(d1), HRRR_00Z_ONLY='1')
-    subprocess.run([sys.executable, 'fetch_hrrr_back.py'], cwd=ROOT, env=env, check=False, capture_output=True)
-    subprocess.run([sys.executable, 'fetch_hrrr_new4.py'], cwd=ROOT, env=env, check=False, capture_output=True)
+    for scr in ('fetch_hrrr_back.py', 'fetch_hrrr_new4.py'):
+        try: subprocess.run([sys.executable, scr], cwd=ROOT, env=env, check=False, capture_output=True, timeout=1800)
+        except subprocess.TimeoutExpired: log('HRRR fetch timed out:', scr, '(partial data kept; will resume next run)')
     # METAR (IEM ASOS, hourly + specials)
     m = pd.read_parquet(f'{ROOT}/data/metar.parquet'); rows = []
     for c in POOL:
@@ -115,7 +116,10 @@ def add_lag_features(H):
 def backfill(d_from=None, d_to=None, dry=False):
     H = pd.read_parquet(C.HISTORY if os.path.isabs(C.HISTORY) else f'{ROOT}/{C.HISTORY}'); H['mday'] = pd.to_datetime(H.mday)
     have = set(zip(H.city, H.mday.dt.date)); yesterday = min(dt.datetime.now(ZoneInfo(TZ[c])).date() for c in POOL) - dt.timedelta(days=1)
-    d1 = d_to or yesterday; d0 = d_from or (H.mday.max().date() - dt.timedelta(days=14))         # look back two weeks by default
+    d1 = d_to or yesterday
+    last_per_city = H[H.city.isin(POOL)].groupby('city').mday.max().dt.date
+    d0 = d_from or max(min(last_per_city) - dt.timedelta(days=1), d1 - dt.timedelta(days=120))       # from the oldest city's last row (cap 120 days)
+    if (d1 - d0).days > 30: d1 = d0 + dt.timedelta(days=30); log(f'large gap: filling {d0}..{d1} this run, the rest on the next runs')
     need = {c: {d for d in pd.date_range(d0, d1).date if (c, d) not in have} for c in POOL}; need = {c: v for c, v in need.items() if v}
     n = sum(len(v) for v in need.values())
     if n == 0: log('history complete through', d1); return 0

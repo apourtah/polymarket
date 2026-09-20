@@ -61,12 +61,12 @@ STATE_FILE = "bot/evening_state.json"; TRADE_LOG = "bot/evening_trades.csv"; KIL
 
 # --- execution camouflage ---------------------------------------------------------------
 LOOP_SECONDS = 60                 # order-management cadence inside the window
-START_JITTER_MIN = (0, 70)        # each city-day starts at a random minute offset into the window
+START_JITTER_MIN = (0, 12)        # each city-day starts at a random minute offset into the window (was 0-70; the backtest enters at ~21:35)
 SKIP_PROB = 0.0                   # skip a city-day entirely with this probability
 SIZE_JITTER = (0.8, 1.2)          # stake multiplier drawn per order
 CHILD_ORDERS = (1, 1)             # split each stake into this many child orders
-CHILD_GAP_MIN = (1, 8)            # minutes between children
-REST_MIN = (5, 20)                # rest a limit 1 tick under the ask for this long before crossing
+CHILD_GAP_MIN = (1, 3)            # minutes between children
+REST_MIN = (2, 6)                 # rest a limit 1 tick under the ask for this long before crossing (was 5-20)
 DEPTH_CAP = 0.30                  # market (cross) leg only: never take more than this share of visible depth at <= ask + 1c; resting limit is full size
 DECOY_PROB = 0.0                  # small non-strategy buy on the model's 2nd bucket, per city-day
 DECOY_STAKE = (8, 20)
