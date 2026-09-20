@@ -45,14 +45,16 @@ for r in T.itertuples():
         for a in ACTS:
             act=(runmax>=entry+a); trig=act&(pos<=runmax-t); k=np.argmax(trig) if trig.any() else -1
             if k>=0 and pos[k]>0.01 and pos[k]<0.995:
-                px=max(pos[k]-SLIP,0.005); fee_out=0.05*px*(1-px)*sh; pnl=sh*px-STAKE-fee_in-fee_out; res[(t,a)].append((pnl,1,r.leg,r.month if hasattr(r,'month') else str(r.mday)[:7]))
-            else: res[(t,a)].append((pnl_hold,0,r.leg,str(r.mday)[:7]))
-H=np.array(hold); print(f"\npaths available: {paths_ok}; HOLD to resolution: P&L ${H.sum():+,.0f} on ${STAKE*len(H):,.0f} ({H.sum()/(STAKE*len(H)):+.1%}), max drawdown of the daily curve computed below")
+                px=max(pos[k]-SLIP,0.005); fee_out=0.05*px*(1-px)*sh; pnl=sh*px-STAKE-fee_in-fee_out; res[(t,a)].append((pnl,1,r.leg,str(r.mday)[:7],r.mday))
+            else: res[(t,a)].append((pnl_hold,0,r.leg,str(r.mday)[:7],r.mday))
+def mdd(pnl,dates):
+    d=pd.Series(pnl).groupby(pd.Series(dates).values).sum().sort_index(); eq=d.cumsum(); return (eq-eq.cummax()).min()
+H=np.array(hold); hd=[x[4] for x in next(iter(res.values()))]; print(f"\npaths available: {paths_ok}; HOLD to resolution: P&L ${H.sum():+,.0f} on ${STAKE*len(H):,.0f} ({H.sum()/(STAKE*len(H)):+.1%}), win rate {(H>0).mean():.1%}, max drawdown ${mdd(H,hd):,.0f}")
 rows=[]
 for (t,a),v in res.items():
-    d=pd.DataFrame(v,columns=['pnl','stopped','leg','month']); m=d.groupby('month').pnl.sum()
-    rows.append(dict(trail=t,activate_after=a,n=len(d),stopped=d.stopped.mean(),pnl=d.pnl.sum(),roi=d.pnl.sum()/(STAKE*len(d)),vs_hold=d.pnl.sum()-H.sum(),neg_months=(m<0).sum(),worst_month=m.min(),yes_pnl=d[d.leg!='no_H'].pnl.sum(),no_pnl=d[d.leg=='no_H'].pnl.sum()))
+    d=pd.DataFrame(v,columns=['pnl','stopped','leg','month','mday']); m=d.groupby('month').pnl.sum()
+    rows.append(dict(trail=t,activate_after=a,n=len(d),stopped=d.stopped.mean(),win_rate=(d.pnl>0).mean(),pnl=d.pnl.sum(),roi=d.pnl.sum()/(STAKE*len(d)),vs_hold=d.pnl.sum()-H.sum(),max_dd=mdd(d.pnl.values,d.mday.values),neg_months=(m<0).sum(),worst_month=m.min()))
 R=pd.DataFrame(rows).sort_values(['activate_after','trail']); print("\n### trailing stop grid (trail = cents below the running max; activate_after = only once the position is up this much)"); print(R.round(2).to_string(index=False))
 # what the stops do: distribution of exits for the best-looking cell and for a tight one
 for key in [(0.10,0.0),(0.20,0.10)]:
-    d=pd.DataFrame(res[key],columns=['pnl','stopped','leg','month']); print(f"\ntrail {key[0]:.2f} / activate {key[1]:.2f}: stopped {d.stopped.mean():.0%} of trades; P&L of stopped trades ${d[d.stopped==1].pnl.sum():+,.0f} vs what holding them would have made ${H[d.stopped.values==1].sum():+,.0f}")
+    d=pd.DataFrame(res[key],columns=['pnl','stopped','leg','month','mday']); print(f"\ntrail {key[0]:.2f} / activate {key[1]:.2f}: stopped {d.stopped.mean():.0%} of trades; P&L of stopped trades ${d[d.stopped==1].pnl.sum():+,.0f} vs what holding them would have made ${H[d.stopped.values==1].sum():+,.0f}")

@@ -27,10 +27,18 @@ for r in T.itertuples():
             for fr in FR:
                 if hit: pnl=fr*sh*tgt+(1-fr)*sh*final-STAKE-fee_in
                 else: pnl=pnl_hold
-                res.setdefault((kind,L,fr),[]).append((pnl,hit,r.leg,str(r.mday)[:7],won))
-H=np.array(hold); print(f"HOLD: ${H.sum():+,.0f} on ${STAKE*len(H):,.0f} ({H.sum()/(STAKE*len(H)):+.1%}), n={len(H)}")
+                res.setdefault((kind,L,fr),[]).append((pnl,hit,r.leg,str(r.mday)[:7],won,r.mday))
+H=np.array(hold); hd=pd.Series(H,index=[r.mday for r in T.itertuples() if r.market_id is not None][:len(H)]) if False else None
+days=[]; 
+for r in T.itertuples():
+    if r.market_id is None: continue
+    days.append(r.mday)
+def mdd(pnl,dates):
+    d=pd.Series(pnl).groupby(pd.Series(dates).values).sum().sort_index(); eq=d.cumsum(); return (eq-eq.cummax()).min()
+first=next(iter(res.values())); hd=[x[5] for x in first]
+print(f"HOLD: ${H.sum():+,.0f} on ${STAKE*len(H):,.0f} ({H.sum()/(STAKE*len(H)):+.1%}), n={len(H)}, win rate {(H>0).mean():.1%}, max drawdown ${mdd(H,hd):,.0f}")
 rows=[]
 for (kind,L,fr),v in res.items():
-    d=pd.DataFrame(v,columns=['pnl','hit','leg','month','won']); m=d.groupby('month').pnl.sum()
-    rows.append(dict(target=(f"entry+{L:.2f}" if kind=='rel' else f"abs {L:.2f}"),fraction=fr,n=len(d),hit=d.hit.mean(),hit_among_winners=d[d.won].hit.mean(),hit_among_losers=d[~d.won].hit.mean(),pnl=d.pnl.sum(),roi=d.pnl.sum()/(STAKE*len(d)),vs_hold=d.pnl.sum()-H.sum(),neg_months=(m<0).sum(),worst_month=m.min()))
+    d=pd.DataFrame(v,columns=['pnl','hit','leg','month','won','mday']); m=d.groupby('month').pnl.sum()
+    rows.append(dict(target=(f"entry+{L:.2f}" if kind=='rel' else f"abs {L:.2f}"),fraction=fr,n=len(d),hit=d.hit.mean(),win_rate=(d.pnl>0).mean(),pnl=d.pnl.sum(),roi=d.pnl.sum()/(STAKE*len(d)),vs_hold=d.pnl.sum()-H.sum(),max_dd=mdd(d.pnl.values,d.mday.values),neg_months=(m<0).sum(),worst_month=m.min()))
 R=pd.DataFrame(rows); print("\n### take-profit limit sweep (maker fill at the target when the mid reaches it; unfilled -> hold)"); print(R.round(2).to_string(index=False))
