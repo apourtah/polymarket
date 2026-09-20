@@ -112,8 +112,10 @@ round_robin / per_day). Redeem at irregular times.
 ## Data & history
 
 `data/evening_history.parquet` is the model's memory: one row per station-day with the 00Z HRRR max,
-features and the realized METAR max (11 US stations, Nov 2025 →). The bot appends to it each morning
-(`score_pending`). Rebuild from scratch with `fetch_hrrr_back.py`, `fetch_metar.py`, the Open-Meteo
+features and the realized METAR max (11 US stations, Nov 2025 →). The bot scores its own forecasts provisionally at
+21:00 local on the day itself (so tonight's fit already knows today's error, as the backtest assumes) and finalises them
+after local midnight (`score_pending`); any city-day it missed — bot stopped, other pool cities — is rebuilt from the
+archives by `bot/backfill.py` at startup and once a day (also runnable by hand: `python3 bot/backfill.py [--from D] [--to D] [--dry]`). Rebuild from scratch with `fetch_hrrr_back.py`, `fetch_metar.py`, the Open-Meteo
 `previous-runs` and IEM MOS pulls (see `backtest_evening.py` for the panel construction).
 
 ## What was tried and rejected

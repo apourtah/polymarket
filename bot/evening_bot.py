@@ -160,17 +160,41 @@ class Bot:
     # ---- history maintenance ----
     def history(self): return pd.read_parquet(C.HISTORY) if os.path.exists(C.HISTORY) else pd.DataFrame()
     def score_pending(self):
-        """Fill in `actual`/`err` for forecasts whose day has ended, append to history."""
+        """Fill in `actual`/`err` for the bot's own forecasts. A day is scored PROVISIONALLY from 21:00 local on the day itself
+        (the max is set by then; this is what the backtest assumes) so tonight's fit already knows today's error, and re-scored
+        as final after local midnight. Missing city-days (bot stopped, other pool cities) are rebuilt from the archives by
+        bot/backfill.py, called at startup and daily."""
         if not os.path.exists(C.FORECASTS): return
-        F = pd.read_parquet(C.FORECASTS); H = self.history(); done = set(zip(H.city, H.mday.astype(str))) if len(H) else set(); add = []
+        F = pd.read_parquet(C.FORECASTS); H = self.history()
+        if len(H) and "provisional" not in H.columns: H["provisional"] = False
+        if len(H): H["provisional"] = H.provisional.fillna(False).astype(bool)
+        done = {(c, str(pd.Timestamp(d).date())): bool(p) for c, d, p in zip(H.city, H.mday, H.provisional)} if len(H) else {}
+        add = []; upd = []
         for r in F.itertuples():
-            tz = ZoneInfo(TZ[r.city]); day = pd.Timestamp(r.mday).date()
-            if (r.city, str(day)) in done or dt.datetime.now(tz).date() <= day: continue
+            tz = ZoneInfo(TZ[r.city]); day = pd.Timestamp(r.mday).date(); now = dt.datetime.now(tz); key = (r.city, str(day))
+            final = now.date() > day; provisional_ok = (now.date() == day and now.hour >= 21)
+            if key in done and not done[key]: continue                    # already final
+            if key in done and done[key] and not final: continue            # provisional and the day is not over yet
+            if key not in done and not (final or provisional_ok): continue
             mx, mn = metar_day_max_min(r.city, day, tz, hours=72)
             if pd.isna(mx): continue
-            rec = r._asdict(); rec.pop("Index", None); rec.update(actual=mx, err=mx - r.hrrr); add.append(rec); log.info("scored %s %s: HRRR %.1f actual %d err %+.1f", r.city, day, r.hrrr, mx, mx - r.hrrr)
-        if add:
-            H = pd.concat([H, pd.DataFrame(add)], ignore_index=True); H["mday"] = pd.to_datetime(H.mday); H.to_parquet(C.HISTORY)
+            if key in done: upd.append((r.city, day, mx, mx - r.hrrr)); log.info("re-scored %s %s as final: actual %d err %+.1f", r.city, day, mx, mx - r.hrrr)
+            else:
+                rec = r._asdict(); rec.pop("Index", None); rec.update(actual=mx, err=mx - r.hrrr, provisional=not final); add.append(rec)
+                log.info("scored %s %s%s: HRRR %.1f actual %d err %+.1f", r.city, day, "" if final else " (provisional, 21:00 local)", r.hrrr, mx, mx - r.hrrr)
+        if add or upd:
+            if add: H = pd.concat([H, pd.DataFrame(add)], ignore_index=True)
+            H["mday"] = pd.to_datetime(H.mday)
+            for c, day, mx, err in upd:
+                m = (H.city == c) & (H.mday.dt.date == day); H.loc[m, ["actual", "err", "provisional"]] = [mx, err, False]
+            H.to_parquet(C.HISTORY)
+    def backfill_history(self):
+        """Rebuild any missing city-days of the history from the archives (see bot/backfill.py)."""
+        try:
+            from bot import backfill
+            n = backfill.backfill(); log.info("backfill: %s", f"{n} rows added" if n else "history complete")
+        except Exception as ex: log.exception("backfill failed: %s", ex)
+        self._last_backfill = dt.datetime.now(dt.timezone.utc).date()
 
     # ---- market data ----
     def markets_for(self, city, day):
@@ -339,8 +363,11 @@ class Bot:
         log.info("FILL %s | %s | %.2f sh @ %.3f = $%.0f [wallet #%d, %s]", o["question"][40:], o["why"], shares, price, usd, o["wallet"], "DRY" if C.DRY_RUN else "LIVE")
 
     def run(self):
+        self.backfill_history()
         while True:
             try:
+                now = dt.datetime.now(dt.timezone.utc)
+                if now.hour >= 9 and getattr(self, "_last_backfill", None) != now.date(): self.backfill_history()   # daily, once every US city is past local midnight
                 self.score_pending()
                 for city in C.CITIES:
                     tz = ZoneInfo(TZ[city]); h = dt.datetime.now(tz).hour
