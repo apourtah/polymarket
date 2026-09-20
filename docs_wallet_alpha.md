@@ -97,3 +97,54 @@ The 0xdd22 account is a singleton here — no sibling wallet in these markets.
 * The (A) snipers are why the print-driven NO idea failed for us and why HighTempTation earns 3 %: it is a latency race.
 * If we ever want copy-signals, the wallets to watch per day are 0x9506, BeefSlayer, fildoro, 0x56b381 and 0xdd22 — their
   fills between 00:00 and 09:00 local, not the crowd's afternoon flow.
+
+---
+
+# Part 2 — Finding rotated wallets, and is following them worth it? (`wallet_reid.py`)
+
+**Do they rotate?** In these six weeks, mostly no: 25 of the top-30 alpha wallets are active on 30–43 of the 43 days. Two
+disappearances (0x56b381 +$6.9k, last fill Sep 4; formon, Sep 3) and one appearance (Weather-Guru, Aug 24). The hand-off search
+(fingerprint of the stopped wallet vs every wallet that started afterwards) finds no convincing successor for 0x56b381 (best
+similarity 0.92, to wallets with ≈$0 P&L); the one strong match is anonymous5474495 → 0x92b7b4c0 (0.988, started the day after
+it stopped — and lost $1,054).
+
+**Can one day of behaviour identify a wallet?** Daily fingerprint = local-hour bands, day-before share, long share, YES-price
+bins, city mix, clip-size signature, activity level. Leave-one-day-out, identity hidden, ranked among every wallet active that
+day (~600 candidates):
+
+| footprint | top-1 | top-3 | top-10 | median rank |
+|---|---|---|---|---|
+| full day | **58 %** | 74 % | 87 % | 1 |
+| first 5 fills | 16 % | 28 % | 43 % | 17 |
+
+Per wallet (full day, top-1): sailor82 95 %, 0x122cb9 95 %, sleeper-service 93 %, anonymous5474495 88 %, neo7777 81 %,
+fildoro 80 %, 0x56b381 68 %, 0x9506 60 %, Weather-Guru 58 %; but 0xdd22 35 %, BeefSlayer 27 %, HighTempTation 17 %
+(its footprint is generic "print sniper"). Open-set detection ("this unknown wallet-day is alpha wallet X" if similarity ≥ τ):
+τ = 0.97 → recall 37 % at 69 % precision; τ = 0.95 → 58 % / 39 %; τ = 0.93 → 70 % / 22 %.
+So: a rotated wallet of a distinctive trader **can** be re-found by the end of its first day with ~60–95 % accuracy, but not
+from its first few fills — too late to act on that day, useful for building the next day's watch-list.
+
+**Is following them profitable?** Train Aug 7–27 (select 15 alpha wallets by P&L and t-stat), test Aug 28–Sep 18, $10 per
+wallet-market, copied at the next print ≥ 60 s after their fill, fee included:
+
+| strategy | clips | ROI | P&L | negative days / 22 |
+|---|---|---|---|---|
+| S1 static alpha ids | 3,315 | −7 % | −$2,293 | 17 |
+| S2 yesterday's top-10 ids | 2,223 | −1 % | −$316 | 16 |
+| S3 fingerprint-matched wallets (id-agnostic), τ 0.93 / 0.95 / 0.97 | 871 / 216 / 22 | −18 % / −29 % / −41 % | | |
+| S4 fill-level "informed flow" model (no identity), edge ≥ 0.10 | 5,864 | 0 % | +$26 | 11 |
+| copy every fill | 39,891 | −7 % | −$27k | 20 |
+
+Per wallet, first fill per market, at their own price vs delayed (Aug 28–Sep 18): 0x9506 +12 % own / **+13 % at +1 h**;
+Weather-Guru +20 % / +19 %; 0xdd22 +8 % / +14 %; fildoro +21 % / +1 % at 60 s (timing edge, evaporates);
+ducky77 +16 % / −8 % (latency edge); HighTempTation +4 % / +1 %; BeefSlayer −9 % / −27 % (its +45 % was the training weeks);
+neo7777 −21 % / −28 %; sailor82 +3 % / −3 %.
+
+**Conclusions.**
+1. Wallet rotation is rare here and, when it happens, re-identification from behaviour works for distinctive traders
+   (60–95 % top-1 after one day) — good enough to maintain a watch-list across rotations, not to copy intraday.
+2. Following alpha wallets does not pay: the group's edge is *price and time*, not the pick — by the next print the price
+   has moved, and the selection itself is noisy (15 train-period winners: 8 lost out of sample). The only copyable wallets
+   are the slow forecast-model traders (0x9506, Weather-Guru, 0xdd22, +13–19 % delayed), whose picks are the ones our own
+   model already makes.
+3. The id-free "informed flow" detector is exactly break-even: the tape does not carry a free signal beyond price.
