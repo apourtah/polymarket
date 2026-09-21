@@ -10,7 +10,7 @@
 Columns: city/day, bucket, shares, avg cost, current YES bid (what you could sell at) and mid, value, unrealized
 P&L, the station's observed high so far today (METAR), and the model context recorded when the trade was placed.
 """
-import argparse, csv, json, os, sys, time, datetime as dt
+import re, argparse, csv, json, os, sys, time, datetime as dt
 from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_HALF_UP
 import requests
@@ -30,7 +30,28 @@ def obs_max(city, day):
     tz = ZoneInfo(TZ[city]); o = get(C.METAR, {"ids": SITE[city][0], "format": "json", "hours": 36}) or []
     v = [(dt.datetime.fromtimestamp(x["obsTime"], tz), rh(x["temp"] * 9 / 5 + 32)) for x in o if x.get("temp") is not None and x.get("obsTime") and dt.datetime.fromtimestamp(x["obsTime"], tz).date() == day]
     if not v: return None, None
-    return max(t for _, t in v), max(v)[0].strftime("%H:%M")
+    tmax, tt = max(v, key=lambda x: (x[1], -x[0].timestamp()))[1], min(t for t, x in v if x == max(y for _, y in v))
+    return tmax, tt.strftime("%H:%M")
+
+def bucket_bounds(q):
+    mm = re.search(r"between (-?\d+)-(-?\d+)|(-?\d+)°[FC] or below|(-?\d+)°[FC] or (?:above|higher)", q)
+    if not mm: return None
+    if mm.group(1): return (int(mm.group(1)), int(mm.group(2)))
+    if mm.group(3): return (-999, int(mm.group(3)))
+    return (int(mm.group(4)), 999)
+
+_ARCH = None
+def obs_max_any(city, day):
+    """Observed daily max: live METAR feed for recent days, the IEM archive (data/metar.parquet) for older ones."""
+    global _ARCH
+    try:
+        if _ARCH is None:
+            import pandas as pd; a = pd.read_parquet("data/metar.parquet", columns=["city", "local_time", "temp_c"]); a["tf"] = (a.temp_c * 9 / 5 + 32).map(rh); a["d"] = a.local_time.dt.date; _ARCH = a
+        g = _ARCH[(_ARCH.city == city) & (_ARCH.d == day)]
+        if len(g) and g.local_time.max().hour >= 22:            # archive has the complete day
+            i = g.tf.idxmax(); return int(g.tf.max()), g.loc[i, "local_time"].strftime("%H:%M")
+    except Exception: pass
+    return obs_max(city, day)                                       # otherwise the live 36 h feed (today / yesterday)
 
 def market_info(cid):
     m = get(f"{C.GAMMA}/markets", {"condition_ids": cid})
@@ -77,9 +98,17 @@ def render(rows, wallet=None, include_resolved=False):
         else:
             tok = json.loads(m["clobTokenIds"])[1 if is_no else 0] if m and m.get("clobTokenIds") else None
             bid, mid = book(tok) if tok else (None, None); mark = bid if bid is not None else (mid or 0)
+            if local.date() > r["day"]:
+                # day is over but the market has not formally resolved (UMA window): the book is usually empty, so value the
+                # position on the observed daily max instead of a missing bid
+                omx0, _ = obs_max_any(r["city"], r["day"]); lo_hi = bucket_bounds(r["question"])
+                if omx0 is not None and lo_hi:
+                    hit = lo_hi[0] <= omx0 <= lo_hi[1]; mark = (0.0 if hit else 1.0) if is_no else (1.0 if hit else 0.0)
+                    status = (f"{G}won{N}" if mark == 1.0 else f"{R}lost{N}") + f" {D}(obs {omx0}°F, awaiting resolution){N}"
+                else: status = f"{Y}awaiting resolution{N}"
+            else: status = f"{Y}open{N} ({local.strftime('%H:%M')} local)"
             val = r["shares"] * mark; pnl = val - r["usd"]; tot_cost += r["usd"]; tot_val += val
-            status = f"{Y}open{N} ({local.strftime('%H:%M')} local)" if local.date() <= r["day"] else f"{Y}awaiting resolution{N}"
-        omx, ot = obs_max(r["city"], r["day"]) if local.date() >= r["day"] else (None, None)
+        omx, ot = obs_max_any(r["city"], r["day"]) if local.date() >= r["day"] else (None, None)
         obs = f"{omx}°F @{ot}" if omx is not None else "—"
         col = G if pnl >= 0 else R
         out.append(f"{r['city'][:14]:<14}{r['day'].strftime('%m-%d'):<8}{bucket:<12}{r['shares']:>8.1f}{r['usd']:>8.0f}{r['avg']:>7.2f}{(bid if bid is not None else float('nan')):>7.2f}{(mid if mid is not None else float('nan')):>7.2f}{val:>8.0f}{col}{pnl:>+9.0f}{N}  {obs:<12}{r['p_ewma']:.2f}/{r['p_ridge']:.2f}{'':<5}{r['why']:<9}{status}{'  [paper]' if r['dry'] else ''}")
