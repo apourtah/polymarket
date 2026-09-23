@@ -10,6 +10,9 @@ instead of dropping it, we rested a buy limit that walks up towards the market:
 
     bid_k = min(band_max, (1 - t_k) * p_k)      t_k = T0 - TSTEP*k      p_k = mid at step k (re-pegged every 5 min)
 
+The bid is one-directional -- it only ratchets UP.  Re-pegging onto a market that has fallen never pulls an existing
+bid down; the older, higher bid stays in the book and is the one that gets hit.
+
 t starts at 0.45 and the discount shrinks by 0.025 every 5 minutes, so the bid walks up from 0.55*p to 1.10*p over
 110 minutes (22 steps) -- the last rungs are marketable, i.e. "buy 10% above the last trade just before the cutoff"
 (see NOTE_ON_T below; the ladder is clamped by band_max either way).  The ladder stops at the cutoff, so nothing is
@@ -91,29 +94,35 @@ def px_at(ts, ps, t, maxage=MAXAGE):
 
 # ---------------------------------------------------------------- the ladder
 def run_ladder(ts, ps, t_start, band_max, t0=T0, tstep=TSTEP, tdir=TDIR, tmin=TMIN,
-               step_min=STEP_MIN, cutoff_min=CUTOFF_MIN, half=HALF_SPREAD, flat=False, clamp=True):
+               step_min=STEP_MIN, cutoff_min=CUTOFF_MIN, half=HALF_SPREAD, flat=False, clamp=True,
+               cap_over=0.0, ratchet=True):
     """Walk the ladder from t_start for cutoff_min minutes. Returns (fill_price, minutes_in, how) or None.
-    flat=True: no t schedule, just rest a bid at band_max for the whole window (control)."""
-    n_steps = int(cutoff_min // step_min)
+
+    The bid is one-directional: it only ever ratchets UP (ratchet=True), so a re-peg onto a falling market never
+    pulls an existing bid down -- the old, higher bid stays in the book and is the one that gets hit.
+    cap    = band_max + cap_over, the closest to market we ever allow the ladder to get (clamp=False -> no cap).
+    flat   = control: no t schedule, just rest at the cap the whole window."""
+    cap = (band_max + cap_over) if clamp else 1.0
+    n_steps = int(cutoff_min // step_min); bid = 0.0
     for k in range(n_steps + 1):
         tk = t_start + k * step_min * 60
+        p = px_at(ts, ps, tk)
         if flat:
-            bid = band_max
+            want = cap
         else:
             t = t0 + tdir * tstep * k
             if tdir < 0 and t < tmin - 1e-9: t = tmin           # ladder exhausted -> hold the last rung
-            p = px_at(ts, ps, tk)
             if p is None: continue
-            bid = min(band_max, (1 - t) * p) if clamp else (1 - t) * p
-        bid = np.floor(bid / TICK + 1e-9) * TICK
+            want = min(cap, (1 - t) * p)
+        want = np.floor(want / TICK + 1e-9) * TICK
+        bid = max(bid, want) if ratchet else want               # one-directional: never re-peg downwards
         if bid < TICK: continue
-        p = px_at(ts, ps, tk)
         if p is not None and bid >= p + half - 1e-9:                     # marketable rung: pay the ask
             return min(bid, p + half), k * step_min, "cross"
         lo, hi = bisect.bisect_right(ts, tk), bisect.bisect_right(ts, min(tk + step_min * 60, t_start + cutoff_min * 60))
         for j in range(lo, hi):
             if ps[j] + half <= bid + 1e-9:                               # ask came down to our resting bid
-                return bid, (ts[j] - t_start) / 60.0, ("rest_cap" if abs(bid - np.floor(band_max / TICK + 1e-9) * TICK) < 1e-9 else "rest")
+                return bid, (ts[j] - t_start) / 60.0, ("rest_cap" if abs(bid - np.floor(cap / TICK + 1e-9) * TICK) < 1e-9 else "rest")
     return None
 
 
@@ -135,11 +144,13 @@ def candidates():
     return pd.DataFrame(rows)
 
 
-def simulate(cand, **kw):
-    """Ladder every above-band candidate; returns the new trades."""
+def simulate(cand, which="above", **kw):
+    """Ladder the candidates: which="above" (the rejections) or "in" (the trades the baseline already takes,
+    i.e. the ladder used as an execution rule instead of crossing at 21:35). Returns the fills."""
     out = []
     for r in cand.itertuples():
-        if r.price <= r.band_hi: continue                      # baseline already trades it
+        if which == "above" and r.price <= r.band_hi: continue      # baseline already trades it
+        if which == "in" and not (r.band_lo <= r.price <= r.band_hi): continue
         m = MK.get((r.city, r.mday), {}).get((r.lo, r.hi))
         if m is None: continue
         ts, ps = path(m["market_id"])
@@ -247,4 +258,28 @@ if __name__ == "__main__":
             rows[f"step {st}"] = summ(simulate(cand, tstep=st))
         for tm in (0.0, -0.05, -0.10, -0.20):
             rows[f"last rung t {tm}"] = summ(simulate(cand, tmin=tm))
+        rows["no ratchet (re-peg down too)"] = summ(simulate(cand, ratchet=False))
         print(pd.DataFrame(rows).T.round(3).to_string())
+
+        # ---- how close to the market may the ladder get?  cap = band_max + cap_over ----
+        print("\n=== how close to market the ladder is allowed to get (cap = band_max + x) ===")
+        rows = {}
+        for x in (0.0, 0.02, 0.05, 0.10, 0.20, 0.30):
+            r = summ(simulate(cand, cap_over=x)); r["fill_rate"] = r["n"] / len(above); rows[f"band_max +{x:.2f}"] = r
+        r = summ(simulate(cand, clamp=False)); r["fill_rate"] = r["n"] / len(above); rows["no cap (walks to 1.10x)"] = r
+        print(pd.DataFrame(rows).T.round(3).to_string())
+
+        # ---- the same ladder as an EXECUTION rule on the trades we already take ----
+        print("\n=== ladder as execution on the in-band trades (vs crossing at 21:35) ===")
+        rows = {}
+        rows["baseline: cross at 21:35 (mid)"] = summ(base)
+        bs = base.copy(); bs["price"] = bs.price + HALF_SPREAD; bs["sh"] = STAKE / bs.price      # same spread convention as the ladder
+        bs["pnl"] = np.where(bs.won, bs.sh - STAKE, -STAKE) - 0.05 * bs.price * (1 - bs.price) * bs.sh
+        rows["baseline: cross at 21:35 (+1c)"] = summ(bs)
+        for x, name, kw in ((0.0, "ladder, cap band_max", {}), (None, "ladder, no cap", {}), (None, "ladder, no cap, mid fills", {"half": 0.0})):
+            I = simulate(cand, which="in", **({"clamp": False} if x is None else {"cap_over": x}), **kw)
+            r = summ(I); r["fill_rate"] = len(I) / len(base)
+            r["missed_pnl"] = base.pnl.sum() - base[[k in set(zip(I.city, I.mday)) for k in zip(base.city, base.mday)]].pnl.sum() if len(I) else base.pnl.sum()
+            rows[name] = r
+        print(pd.DataFrame(rows).T.round(3).to_string())
+        print("(missed_pnl = baseline P&L of the in-band nights the ladder never filled -- P&L given up by waiting)")
