@@ -222,7 +222,32 @@ def sd_study():
     R.to_parquet("out/sd_window_study.parquet")
 
 
+def gain_study():
+    """gain_window changes which EWMA gain is selected, which moves mu directly -- a much stronger lever than
+    sd_window. Reports forecast accuracy as well as P&L: a window that does not improve the EWMA's own MAE has
+    no reason to improve P&L except by chance."""
+    base = forecasts(); rows = {}; picks = {}
+    for w in (30, 45, 60, 90, 120, 150, 180, 240, None):
+        F = forecasts(gain_window=w); T = run(F); r = summ(T)
+        r["ewma_bias"] = F.res_e.mean(); r["ewma_mae"] = F.res_e.abs().mean()
+        r["mu_shift"] = (F.mu_e - base.mu_e).abs().mean()          # how far the correction moves vs the live config
+        rows[f"gain_window {w if w else 'all history (live)'}"] = r
+        # which gain does each city end up on, at the end of the period?
+        H = P[P.mday < END]; M = Models(H, gain_window=w)
+        picks[w if w else "all"] = {c: M.ewma[c][0] for c in TRADE}
+    R = pd.DataFrame(rows).T
+    R.columns = ["n", "win", "pnl", "roi", f"n>={MID}", "pnl_aug", "roi_aug", f"n>={RECENT}", "win_bad", "pnl_bad",
+                 "ewma_bias", "ewma_mae", "mu_shift"]
+    print(f"\n=== gain_window sweep ({START}..{END}); baseline EWMA MAE {base.res_e.abs().mean():.3f} ===")
+    print(R.round(3).to_string())
+    print("\nEWMA gain selected per city (fit on history to {}):".format(END))
+    print(pd.DataFrame(picks).T.to_string())
+    R.to_parquet("out/gain_window_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("GAIN_ONLY") == "1":
+        gain_study(); raise SystemExit
     if os.environ.get("SD_ONLY") == "1":
         sd_study(); raise SystemExit
     quick = os.environ.get("QUICK") == "1"
