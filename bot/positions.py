@@ -26,11 +26,24 @@ def get(url, params=None):
         r = requests.get(url, params=params, timeout=15); return r.json() if r.status_code == 200 else None
     except Exception: return None
 
+METAR_MAX_HOURS = 240      # the feed honours windows well past 36 h (tested: 120 h reaches 5 days back)
+
+def covers_day(times, tz, day):
+    """True if the observations span the hours that can hold the daily max. A window that clips the morning silently
+    under-reports the peak: on 2026-09-22 a 36 h window starting 14:38 gave Los Angeles 74°F at 14:53, when the real
+    max was 76°F at 11:53 -- enough to show a lost position as won."""
+    if day >= dt.datetime.now(tz).date(): return True                      # today: a partial max is expected, and is labelled as such
+    hrs = {t.hour for t in times}
+    return min(hrs) <= 10 and max(hrs) >= 18 and sum(11 <= h <= 18 for h in hrs) >= 6
+
 def obs_max(city, day):
-    tz = ZoneInfo(TZ[city]); o = get(C.METAR, {"ids": SITE[city][0], "format": "json", "hours": 36}) or []
+    """Observed daily max from the live METAR feed, or (None, None) when the feed does not cover the whole day."""
+    tz = ZoneInfo(TZ[city]); age = (dt.datetime.now(tz).date() - day).days
+    hours = min(METAR_MAX_HOURS, max(36, (age + 1) * 24 + 12))             # window sized to the day's age, not a fixed 36 h
+    o = get(C.METAR, {"ids": SITE[city][0], "format": "json", "hours": hours}) or []
     v = [(dt.datetime.fromtimestamp(x["obsTime"], tz), rh(x["temp"] * 9 / 5 + 32)) for x in o if x.get("temp") is not None and x.get("obsTime") and dt.datetime.fromtimestamp(x["obsTime"], tz).date() == day]
-    if not v: return None, None
-    tmax, tt = max(v, key=lambda x: (x[1], -x[0].timestamp()))[1], min(t for t, x in v if x == max(y for _, y in v))
+    if not v or not covers_day([t for t, _ in v], tz, day): return None, None
+    tmax = max(v, key=lambda x: (x[1], -x[0].timestamp()))[1]; tt = min(t for t, x in v if x == tmax)
     return tmax, tt.strftime("%H:%M")
 
 def bucket_bounds(q):
@@ -40,18 +53,19 @@ def bucket_bounds(q):
     if mm.group(3): return (-999, int(mm.group(3)))
     return (int(mm.group(4)), 999)
 
-_ARCH = None
+_ARCH = None; _ARCH_MTIME = None
 def obs_max_any(city, day):
-    """Observed daily max: live METAR feed for recent days, the IEM archive (data/metar.parquet) for older ones."""
-    global _ARCH
+    """Observed daily max: the IEM archive (data/metar.parquet) when it holds the complete day, else the live feed."""
+    global _ARCH, _ARCH_MTIME
     try:
-        if _ARCH is None:
-            import pandas as pd; a = pd.read_parquet("data/metar.parquet", columns=["city", "local_time", "temp_c"]); a["tf"] = (a.temp_c * 9 / 5 + 32).map(rh); a["d"] = a.local_time.dt.date; _ARCH = a
+        mt = os.path.getmtime("data/metar.parquet")
+        if _ARCH is None or mt != _ARCH_MTIME:                  # reload when refresh_recent.py extends it under a --watch
+            import pandas as pd; a = pd.read_parquet("data/metar.parquet", columns=["city", "local_time", "temp_c"]); a["tf"] = (a.temp_c * 9 / 5 + 32).map(rh); a["d"] = a.local_time.dt.date; _ARCH, _ARCH_MTIME = a, mt
         g = _ARCH[(_ARCH.city == city) & (_ARCH.d == day)]
         if len(g) and g.local_time.max().hour >= 22:            # archive has the complete day
             i = g.tf.idxmax(); return int(g.tf.max()), g.loc[i, "local_time"].strftime("%H:%M")
     except Exception: pass
-    return obs_max(city, day)                                       # otherwise the live 36 h feed (today / yesterday)
+    return obs_max(city, day)                                       # otherwise the live feed, which now refuses a partial day
 
 def market_info(cid):
     m = get(f"{C.GAMMA}/markets", {"condition_ids": cid})
