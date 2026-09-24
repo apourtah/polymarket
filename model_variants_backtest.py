@@ -189,7 +189,42 @@ def summ(t, tag=""):
                           n_r=len(r), win_r=r.won.mean() if len(r) else np.nan, pnl_r=r.pnl.sum()))
 
 
+def sd_study():
+    """sd only enters the rule through argmax(bucket_probs), so it can only change a pick near a bucket edge or in
+    the open-ended tail buckets. This measures how often it changes anything at all, down to very short windows."""
+    base = forecasts(); rows = {}
+    for w in (5, 7, 10, 14, 20, 30, 45, 60, 90, 120):
+        F = forecasts(sd_window=w)
+        j = base.merge(F, on=["city", "mday"], suffixes=("_b", "_w"))
+        chg_e = (j.sd_e_b.round(6) != j.sd_e_w.round(6)).mean()
+        T = run(F); r = summ(T)
+        r["mean_sd_e"] = F.sd_e.mean(); r["mean_sd_r"] = F.sd_r.mean()
+        r["sd_at_floor"] = ((F.sd_e <= 1.0001) | (F.sd_r <= 1.0001)).mean()
+        r["sd_differs"] = chg_e
+        rows[f"sd_window {w}" + (" (live)" if w == 60 else "")] = r
+    R = pd.DataFrame(rows).T
+    R.columns = ["n", "win", "pnl", "roi", f"n>={MID}", "pnl_aug", "roi_aug", f"n>={RECENT}", "win_bad", "pnl_bad",
+                 "mean_sd_e", "mean_sd_r", "sd_at_floor", "sd_differs"]
+    print(f"\n=== sd_window, short windows included ({START}..{END}) ===")
+    print(R.round(3).to_string())
+    # how often does the shorter sd actually change the PICK?
+    print("\nnights where the chosen bucket changes vs the live 60-day sd (the only way sd can matter):")
+    for w in (5, 10, 20, 120):
+        F = forecasts(sd_window=w); n_e = n_r = n = 0
+        for a, b in zip(base.itertuples(), F.itertuples()):
+            pr = prices_for(a.city, a.mday)
+            if len(pr) < 3: continue
+            bk = list(pr); n += 1
+            Pa, Pb = bucket_probs(a.mu_e, a.sd_e, bk), bucket_probs(b.mu_e, b.sd_e, bk)
+            Qa, Qb = bucket_probs(a.mu_r, a.sd_r, bk), bucket_probs(b.mu_r, b.sd_r, bk)
+            n_e += max(Pa, key=Pa.get) != max(Pb, key=Pb.get); n_r += max(Qa, key=Qa.get) != max(Qb, key=Qb.get)
+        print(f"  sd_window {w:>3}: EWMA pick changes on {n_e}/{n} nights ({n_e/n:.1%}), ridge pick on {n_r}/{n} ({n_r/n:.1%})")
+    R.to_parquet("out/sd_window_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("SD_ONLY") == "1":
+        sd_study(); raise SystemExit
     quick = os.environ.get("QUICK") == "1"
     out = {}
     base_F = forecasts()
@@ -204,7 +239,7 @@ if __name__ == "__main__":
     for w in ([90, 180] if quick else [60, 90, 120, 180]):
         out[f"gain_window {w}d"] = summ(run(forecasts(gain_window=w)))
     # --- lever 3: shorter sd window
-    for s in ([20, 30] if quick else [20, 30, 45, 120]):
+    for s in ([20, 30] if quick else [5, 7, 10, 14, 20, 30, 45, 120]):
         out[f"sd_window {s}"] = summ(run(forecasts(sd_window=s)))
     # --- lever 4a: stand down when the model is off-bias
     for k, thr in ([(7, 1.5), (14, 1.5)] if quick else [(7, 1.0), (7, 1.5), (7, 2.0), (14, 1.0), (14, 1.5), (14, 2.0)]):
