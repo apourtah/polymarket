@@ -89,8 +89,11 @@ def prices_for(city, d):
 
 # ---------------------------------------------------------------- the model, parameterised
 class Models:
-    def __init__(self, hist, gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None):
+    def __init__(self, hist, gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None,
+                 ridge_window=None, ridge_halflife=None, ridge_alpha=None, seasonal=False,
+                 per_city=False, ridge_bias_gain=None):
         self.hist = hist.dropna(subset=["err"]).copy(); self.cities = sorted(self.hist.city.unique())
+        self.seasonal = seasonal; self.per_city = per_city
         self.ewma = {}; self.ewma_sd = {}; self.ridge_sd = {}
         for c in self.cities:
             fl = gain_floor if (floor_cities is None or c in floor_cities) else 0.0   # per-city floor
@@ -104,16 +107,54 @@ class Models:
                 s = float(np.sum(np.square(w)))
                 if best is None or s < best[0]: best = (s, k, b, np.std(se[-sd_window:]))
             self.ewma[c] = (best[1], best[2]); self.ewma_sd[c] = max(best[3], 1.0)
-        X = self.hist[C.FEATS].copy(); self.med = X.median().fillna(0); X = X.fillna(self.med)
+        R = self.hist
+        if ridge_window:                                                     # fit on a trailing window only
+            R = R[R.mday > R.mday.max() - dt.timedelta(days=ridge_window)]
+            if len(R) < 200: R = self.hist
+        self.rhist = R
+        X = self.feats(R); self.med = X.median().fillna(0); X = X.fillna(self.med)
         self.mu = X.mean(); self.sd = X.std().replace(0, 1)
-        Z = np.c_[((X - self.mu) / self.sd).values, pd.get_dummies(self.hist.city).reindex(columns=self.cities, fill_value=0).values]
-        self.ridge = Ridge(alpha=C.RIDGE_ALPHA).fit(Z, self.hist.err.values)
-        res = self.hist.err.values - self.ridge.predict(Z)
-        for c in self.cities: self.ridge_sd[c] = max(float(np.std(res[(self.hist.city == c).values][-sd_window:])), 1.0)
+        alpha = C.RIDGE_ALPHA if ridge_alpha is None else ridge_alpha
+        w = None
+        if ridge_halflife:                                                   # exponential recency weights
+            age = np.array([(R.mday.max() - d).days for d in R.mday], dtype=float)
+            w = np.power(0.5, age / ridge_halflife)
+        Xn = ((X - self.mu) / self.sd).values
+        if per_city:                                                         # a separate fit per city, no pooling
+            self.ridge = {}; pred = np.zeros(len(R)); cv = R.city.values
+            for c in self.cities:
+                m = cv == c
+                fit = m if m.sum() >= 60 else np.ones(len(R), bool)           # too few rows: fall back to the pooled sample
+                self.ridge[c] = Ridge(alpha=alpha).fit(Xn[fit], R.err.values[fit], sample_weight=None if w is None else w[fit])
+                if m.sum(): pred[m] = self.ridge[c].predict(Xn[m])            # batched, not row by row
+        else:
+            Z = np.c_[Xn, pd.get_dummies(R.city).reindex(columns=self.cities, fill_value=0).values]
+            self.ridge = Ridge(alpha=alpha).fit(Z, R.err.values, sample_weight=w)
+            pred = self.ridge.predict(Z)
+        res = R.err.values - pred
+        self.ridge_bias = {}
+        for c in self.cities:
+            m = (R.city == c).values
+            self.ridge_sd[c] = max(float(np.std(res[m][-sd_window:])) if m.sum() else 1.0, 1.0)
+            b = 0.0
+            if ridge_bias_gain and m.sum():                                  # EWMA of the ridge's own recent residuals
+                for x in res[m]: b += ridge_bias_gain * (x - b)
+            self.ridge_bias[c] = b
+    def feats(self, df):
+        X = df[C.FEATS].copy()
+        if self.seasonal:                                                    # doy is linear in FEATS; give the fit a real season
+            X["doy_s"] = np.sin(2 * np.pi * df.doy / 365.25); X["doy_c"] = np.cos(2 * np.pi * df.doy / 365.25)
+        return X
+
     def predict(self, city, feats):
-        x = pd.Series({f: feats.get(f, np.nan) for f in C.FEATS}).fillna(self.med)
-        z = np.r_[((x - self.mu) / self.sd).values, [1.0 if c == city else 0.0 for c in self.cities]]
-        return dict(ewma=self.ewma[city][1], ridge=float(self.ridge.predict(z[None, :])[0]),
+        cols = list(self.med.index)
+        x = pd.Series({f: feats.get(f, np.nan) for f in cols})
+        if self.seasonal:
+            d = feats.get("doy", 1); x["doy_s"] = np.sin(2 * np.pi * d / 365.25); x["doy_c"] = np.cos(2 * np.pi * d / 365.25)
+        x = x.reindex(cols).fillna(self.med); xn = ((x - self.mu) / self.sd).values
+        if self.per_city: r = float(self.ridge[city].predict(xn[None, :])[0])
+        else: r = float(self.ridge.predict(np.r_[xn, [1.0 if c == city else 0.0 for c in self.cities]][None, :])[0])
+        return dict(ewma=self.ewma[city][1], ridge=r + self.ridge_bias.get(city, 0.0),
                     ewma_sd=self.ewma_sd[city], ridge_sd=self.ridge_sd[city])
 
 def bucket_probs(mu, sd, buckets):
@@ -122,15 +163,16 @@ def bucket_probs(mu, sd, buckets):
 
 # ---------------------------------------------------------------- stage 1: walk-forward forecasts
 _fc = {}
-def forecasts(gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None):
+def forecasts(gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None, **mk):
     """Walk-forward mu/sd per traded city-day for one model configuration (cached)."""
-    key = (gain_floor, gain_window, sd_window, tuple(sorted(floor_cities)) if floor_cities else None)
+    key = (gain_floor, gain_window, sd_window, tuple(sorted(floor_cities)) if floor_cities else None,
+           tuple(sorted(mk.items())))
     if key in _fc: return _fc[key]
     rows = []
     for d in sorted(x for x in P.mday.unique() if START <= x <= END):
         H = P[P.mday < d]
         if len(H) < C.MIN_HISTORY_DAYS: continue
-        M = Models(H, gain_floor, gain_window, sd_window, floor_cities)
+        M = Models(H, gain_floor, gain_window, sd_window, floor_cities, **mk)
         for c in TRADE:
             r = P[(P.city == c) & (P.mday == d)]
             if r.empty: continue
@@ -245,7 +287,87 @@ def gain_study():
     R.to_parquet("out/gain_window_study.parquet")
 
 
+def drift_study():
+    """Is the fit drifting because it never forgets? The EWMA adapts, but the ridge is refit nightly on the WHOLE
+    history with equal weight on January and September, and the bucket sd comes from a 60-residual window. This
+    sweeps the ridge's memory (trailing window, exponential recency weights, regularisation), its structure
+    (pooled-with-dummies vs per-city, linear doy vs real seasonal terms) and an EWMA bias correction on the ridge's
+    own residuals. Forecast accuracy is reported alongside P&L: a lever that does not improve MAE has no business
+    improving P&L except by luck."""
+    base = forecasts(); rows = {}
+    def add(name, **mk):
+        F = forecasts(**mk); T = run(F); r = summ(T)
+        r["ewma_mae"] = F.res_e.abs().mean(); r["ridge_bias"] = F.res_r.mean(); r["ridge_mae"] = F.res_r.abs().mean()
+        rows[name] = r
+    add("baseline (live)")
+    for w in (90, 120, 180, 240, 365):   add(f"ridge_window {w}d", ridge_window=w)
+    for hl in (30, 60, 90, 120, 180):    add(f"ridge_halflife {hl}d", ridge_halflife=hl)
+    for a in (5, 10, 50, 100):           add(f"ridge_alpha {a}", ridge_alpha=a)
+    add("seasonal doy sin/cos", seasonal=True)
+    add("per-city ridge", per_city=True)
+    for g in (0.05, 0.1, 0.2):           add(f"ridge_bias EWMA g={g}", ridge_bias_gain=g)
+    # combinations of the memory levers
+    add("halflife 90 + seasonal", ridge_halflife=90, seasonal=True)
+    add("window 180 + alpha 50", ridge_window=180, ridge_alpha=50)
+    add("halflife 120 + bias g=0.1", ridge_halflife=120, ridge_bias_gain=0.1)
+    add("halflife 90 + sd 30", ridge_halflife=90, sd_window=30)
+    R = pd.DataFrame(rows).T
+    R.columns = ["n", "win", "pnl", "roi", f"n>={MID}", "pnl_aug", "roi_aug", f"n>={RECENT}", "win_bad", "pnl_bad",
+                 "ewma_mae", "ridge_bias", "ridge_mae"]
+    print(f"\n=== ridge memory / structure sweep ({START}..{END}) ===")
+    print(R.round(3).to_string())
+    R.to_parquet("out/drift_study.parquet")
+    # --- is there drift to find in the first place? ---
+    F = base.copy(); F["m"] = pd.to_datetime(F.mday).dt.to_period("M")
+    print("\n=== baseline forecast error by month (all 7 traded cities) ===")
+    print(F.groupby("m").apply(lambda g: pd.Series(dict(n=len(g), ewma_bias=g.res_e.mean(), ewma_mae=g.res_e.abs().mean(),
+          ridge_bias=g.res_r.mean(), ridge_mae=g.res_r.abs().mean()))).round(3).to_string())
+    print("\n=== ridge bias by city, first half vs last 6 weeks ===")
+    a = F[F.mday < dt.date(2026, 7, 1)].groupby("city").res_r.mean(); b = F[F.mday >= dt.date(2026, 8, 15)].groupby("city").res_r.mean()
+    print(pd.DataFrame({"to Jun 30": a, "Aug 15+": b, "drift": b - a}).round(2).to_string())
+
+
+def weight_study():
+    """A hard 180-day cutoff helped; does weighting recent days MORE inside that window help further? ridge_window
+    truncates the fit sample, then ridge_halflife applies exponential recency weights within it. Also sweeps the
+    window finely, to check the 180-240d plateau is real and not a two-point accident. ess = effective sample size
+    (sum(w)^2 / sum(w^2)) at the end of the period -- how many city-days the fit is really using."""
+    rows = {}
+    def add(name, **mk):
+        F = forecasts(**mk); T = run(F); r = summ(T)
+        r["ridge_bias"] = F.res_r.mean(); r["ridge_mae"] = F.res_r.abs().mean()
+        H = P[P.mday < END]; M = Models(H, **mk)
+        R = M.rhist; w = np.ones(len(R))
+        if mk.get("ridge_halflife"):
+            age = np.array([(R.mday.max() - d).days for d in R.mday], dtype=float)
+            w = np.power(0.5, age / mk["ridge_halflife"])
+        r["rows"] = len(R); r["ess"] = w.sum() ** 2 / (w ** 2).sum()
+        rows[name] = r
+    add("baseline: all history, equal weight")
+    print("fine window sweep...", flush=True)
+    for w in (150, 165, 180, 195, 210, 240, 270):
+        add(f"window {w}d", ridge_window=w)
+    print("window x halflife grid...", flush=True)
+    for win in (150, 180, 210, 240):
+        for hl in (45, 60, 90, 120, 180):
+            add(f"window {win}d + halflife {hl}d", ridge_window=win, ridge_halflife=hl)
+    R = pd.DataFrame(rows).T
+    R.columns = ["n", "win", "pnl", "roi", f"n>={MID}", "pnl_aug", "roi_aug", f"n>={RECENT}", "win_bad", "pnl_bad",
+                 "ridge_bias", "ridge_mae", "fit_rows", "ess"]
+    print(f"\n=== recency weighting inside the ridge window ({START}..{END}) ===")
+    print(R.round(3).to_string())
+    R.to_parquet("out/weight_study.parquet")
+    b = rows["baseline: all history, equal weight"]
+    print(f"\nbaseline P&L ${b['pnl']:.0f}; bootstrap sd is ~$556, so a variant needs ~+$912 to clear noise.")
+    top = R.sort_values("pnl", ascending=False).head(5)
+    print("\ntop 5 by P&L:"); print(top[["n", "win", "pnl", "roi", "pnl_aug", "pnl_bad", "ridge_mae", "ess"]].round(3).to_string())
+
+
 if __name__ == "__main__":
+    if os.environ.get("WEIGHT_ONLY") == "1":
+        weight_study(); raise SystemExit
+    if os.environ.get("DRIFT_ONLY") == "1":
+        drift_study(); raise SystemExit
     if os.environ.get("GAIN_ONLY") == "1":
         gain_study(); raise SystemExit
     if os.environ.get("SD_ONLY") == "1":
