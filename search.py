@@ -143,7 +143,8 @@ def walk(P, cfg):
 
 
 def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg",
-         sd_pick=None, sd_pick_dis=None, P=None):
+         sd_pick=None, sd_pick_dis=None, min_p=None, min_edge=None, agree_band=None,
+         dis_edge=None, dis_min_p=None, model_band=None, modes=None, P=None):
     """The trading rule, with the agreement STRUCTURE opened up.
 
     Live: buy when the two models' argmax bucket is identical ("agree"), else follow the configured model.
@@ -191,12 +192,24 @@ def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg
                 sb = (se + sr) / 2 if blend_sd == "avg" else (blend * se + (1 - blend) * sr if blend_sd == "mix" else se)
             Pb = MV.bucket_probs(blend * r.mu_e + (1 - blend) * r.mu_r, sb, bk)
             pick_agree = max(Pb, key=Pb.get)
-        modes = C.MODES.get(r.city, set()); spent = 0.0
+        mo = (modes or C.MODES).get(r.city, set()); spent = 0.0
+        alo, ahi = agree_band if agree_band else (C.AGREE_MIN_PRICE, C.AGREE_MAX_PRICE)
+        mlo, mhi = model_band if model_band else (C.MODEL_MIN_PRICE, C.MODEL_MAX_PRICE)
         for b in bk:
             ask, won = pr[b]; why = None
-            if agree and "agree" in modes and b == pick_agree and C.AGREE_MIN_PRICE <= ask <= C.AGREE_MAX_PRICE: why = "agree"
-            elif not agree and "ridge" in modes and b == br and C.MODEL_MIN_PRICE <= ask <= C.MODEL_MAX_PRICE: why = "dis_ridge"
-            elif not agree and "ewma" in modes and b == be and C.MODEL_MIN_PRICE <= ask <= C.MODEL_MAX_PRICE: why = "dis_ewma"
+            pav = (Pe[b] + Pr[b]) / 2
+            if agree and "agree" in mo and b == pick_agree and alo <= ask <= ahi:
+                if min_p is not None and pav < min_p: continue          # how confident must the models be?
+                if min_edge is not None and pav - ask < min_edge: continue   # model probability vs the price paid
+                why = "agree"
+            elif not agree and "ridge" in mo and b == br and mlo <= ask <= mhi:
+                if dis_edge is not None and Pr[b] - ask < dis_edge: continue      # the ridge's own probability vs the price
+                if dis_min_p is not None and Pr[b] < dis_min_p: continue
+                why = "dis_ridge"
+            elif not agree and "ewma" in mo and b == be and mlo <= ask <= mhi:
+                if dis_edge is not None and Pe[b] - ask < dis_edge: continue
+                if dis_min_p is not None and Pe[b] < dis_min_p: continue
+                why = "dis_ewma"
             if not why: continue
             stake = min(C.STAKE, C.MAX_PER_MARKET_USD, C.MAX_PER_CITY_DAY_USD - spent)
             if stake < C.MIN_ORDER_SHARES * ask: continue
@@ -207,7 +220,7 @@ def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg
 
 
 def score(name, cfg, P):
-    rk = {k: v for k, v in cfg.items() if k in ("agree_tol", "third", "blend", "sd_spread", "blend_sd", "sd_pick", "sd_pick_dis")}
+    rk = {k: v for k, v in cfg.items() if k in ("agree_tol", "third", "blend", "sd_spread", "blend_sd", "sd_pick", "sd_pick_dis", "min_p", "min_edge", "agree_band", "dis_edge", "dis_min_p", "model_band", "modes")}
     F = walk(P, cfg)
     if rk:
         ex = P[["city", "mday", "nbm_max", "mos_spread"]].rename(columns={"nbm_max": "mu_n"})
@@ -216,7 +229,10 @@ def score(name, cfg, P):
     else:
         T = MV.run(F)
     T["mday"] = pd.to_datetime(T.mday).dt.date
-    rec = dict(name=name, cfg=json.dumps(cfg, default=str), n=len(T), pnl=T.pnl.sum(),
+    key = set(map(tuple, T[["city", "mday", "why", "price"]].astype(str).values)) if len(T) else set()
+    ndiff = len(key ^ score.LIVE_KEY) if getattr(score, "LIVE_KEY", None) is not None else np.nan
+    if name.startswith("LIVE"): score.LIVE_KEY = key; ndiff = 0
+    rec = dict(name=name, cfg=json.dumps(cfg, default=str), n=len(T), n_diff=ndiff, pnl=T.pnl.sum(),
                roi=T.pnl.sum() / T.stake.sum() if len(T) else np.nan,
                mae_r=F.res_r.abs().mean(), mae_e=F.res_e.abs().mean())
     for fn, a, b in FOLDS:
@@ -227,6 +243,167 @@ def score(name, cfg, P):
 
 
 BATCHES = {
+    # batch 13: combine the two independent levers found in b12 -- add the untraded disagree nights in Seattle and
+    # Miami (+P&L), and drop the weak agree leg in LA and Austin (+ROI). Different cities, different legs.
+    "b13": (lambda E={"agree","ewma"}, R={"agree","ridge"}, B={"agree","ewma","ridge"},
+                   W={"ewma"}, DE={"ewma","ridge"}: {
+        "LIVE":                                   dict(),
+        "S+M +ewma (b12 P&L leader)":             dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E})),
+        "drop agree LA+Austin (b12 ROI leader)":  dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W})),
+        "BOTH":                                   dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W})),
+        "BOTH + Chicago ridge-only":              dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W, "Chicago": {"ridge"}})),
+        "BOTH + Houston +ewma":                   dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W, "Houston": {"ridge","ewma"}})),
+        "BOTH + Dallas +ewma":                    dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W, "Dallas": {"ridge","ewma"}})),
+        "BOTH + H&D +ewma":                       dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W,
+                                                                              "Houston": {"ridge","ewma"}, "Dallas": {"ridge","ewma"}})),
+        "BOTH + S&M both dis legs":               dict(modes=dict(C.MODES, **{"Seattle": B, "Miami": B,
+                                                                              "Los Angeles": W, "Austin": W})),
+        "BOTH + dis_edge 0.05":                   dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W}), dis_edge=0.05),
+        "BOTH + dis_edge 0.02":                   dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W}), dis_edge=0.02),
+        "BOTH + min_edge 0.05 (agree only)":      dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W}), min_edge=0.05),
+        "BOTH + w210":                            dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W}), ridge_window=210),
+        "BOTH + pick_sd 0.75":                    dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W}), blend=1.0, blend_sd=0.75),
+        "S+M +ewma, keep LA/Austin agree":        dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E})),
+        "drop agree LA only, S+M +ewma":          dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E, "Los Angeles": W})),
+        "drop agree Austin only, S+M +ewma":      dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E, "Austin": W})),
+        "BOTH but S&M ewma-only (no agree)":      dict(modes=dict(C.MODES, **{"Seattle": W, "Miami": W,
+                                                                              "Los Angeles": W, "Austin": W})),
+        "every city ewma+ridge+agree except LA/Aus": dict(modes={c: (W if c in ("Los Angeles","Austin") else B) for c in C.CITIES}),
+        "BOTH + Seattle ridge too":               dict(modes=dict(C.MODES, **{"Seattle": B, "Miami": E,
+                                                                              "Los Angeles": W, "Austin": W})),
+    })(),
+    # batch 12: EXPANSION. Seattle and Miami are agree-only, so every disagreement night there goes untraded, and
+    # the disagree legs are the strong ones wherever they exist (ewma 0.64, ridge 0.58 vs agree 0.23). Adding legs
+    # can raise P&L and ROI together, unlike the restrictions in batches 9-11.
+    "b12": (lambda A={"agree"}, E={"agree","ewma"}, R={"agree","ridge"}, B={"agree","ewma","ridge"}: {
+        "LIVE":                                  dict(),
+        "Seattle +ewma":                         dict(modes=dict(C.MODES, **{"Seattle": E})),
+        "Seattle +ridge":                        dict(modes=dict(C.MODES, **{"Seattle": R})),
+        "Miami +ewma":                           dict(modes=dict(C.MODES, **{"Miami": E})),
+        "Miami +ridge":                          dict(modes=dict(C.MODES, **{"Miami": R})),
+        "Seattle+Miami +ridge":                  dict(modes=dict(C.MODES, **{"Seattle": R, "Miami": R})),
+        "Seattle+Miami +ewma":                   dict(modes=dict(C.MODES, **{"Seattle": E, "Miami": E})),
+        "Houston +agree":                        dict(modes=dict(C.MODES, **{"Houston": R})),
+        "Dallas +agree":                         dict(modes=dict(C.MODES, **{"Dallas": R})),
+        "LA +ridge (both dis legs)":             dict(modes=dict(C.MODES, **{"Los Angeles": B})),
+        "Austin +ridge (both dis legs)":         dict(modes=dict(C.MODES, **{"Austin": B})),
+        "Chicago +ewma (both dis legs)":         dict(modes=dict(C.MODES, **{"Chicago": B})),
+        "every city all 3 legs":                 dict(modes={c: B for c in C.CITIES}),
+        "every city both dis legs, no agree":    dict(modes={c: {"ewma","ridge"} for c in C.CITIES}),
+        "drop agree in LA+Austin":               dict(modes=dict(C.MODES, **{"Los Angeles": {"ewma"}, "Austin": {"ewma"}})),
+        "drop agree LA+Austin, +ridge S&M":      dict(modes=dict(C.MODES, **{"Los Angeles": {"ewma"}, "Austin": {"ewma"},
+                                                                             "Seattle": R, "Miami": R})),
+        "drop agree LA+Austin + dis_edge 0.05":  dict(modes=dict(C.MODES, **{"Los Angeles": {"ewma"}, "Austin": {"ewma"}}), dis_edge=0.05),
+        "all 3 legs + dis_edge 0.05":            dict(modes={c: B for c in C.CITIES}, dis_edge=0.05),
+        "all 3 legs + min_edge 0.12":            dict(modes={c: B for c in C.CITIES}, min_edge=0.12),
+        "both dis legs + dis_edge 0.05":         dict(modes={c: {"ewma","ridge"} for c in C.CITIES}, dis_edge=0.05),
+    })(),
+    # batch 11: is min_edge anything more than a price filter? Edge and price are nearly collinear (high edge =
+    # cheap). Match trade counts with plain price caps and see whether the ROI gain survives the control.
+    "b11": {
+        "LIVE":                                  dict(),
+        "min_edge 0.12 (n=445)":                 dict(min_edge=0.12),
+        "min_edge 0.12+dis 0.10 (n=209)":        dict(min_edge=0.12, dis_edge=0.10),
+        "price: agree<=0.45":                    dict(agree_band=(0.10, 0.45)),
+        "price: agree<=0.40":                    dict(agree_band=(0.10, 0.40)),
+        "price: agree<=0.35":                    dict(agree_band=(0.10, 0.35)),
+        "price: agree<=0.30":                    dict(agree_band=(0.10, 0.30)),
+        "price: agree<=0.25":                    dict(agree_band=(0.10, 0.25)),
+        "price: model<=0.40":                    dict(model_band=(0.05, 0.40)),
+        "price: model<=0.35":                    dict(model_band=(0.05, 0.35)),
+        "price: model<=0.30":                    dict(model_band=(0.05, 0.30)),
+        "price: model<=0.25":                    dict(model_band=(0.05, 0.25)),
+        "price: model<=0.20":                    dict(model_band=(0.05, 0.20)),
+        "price: agree<=0.35 + model<=0.30":      dict(agree_band=(0.10, 0.35), model_band=(0.05, 0.30)),
+        "price: agree<=0.30 + model<=0.25":      dict(agree_band=(0.10, 0.30), model_band=(0.05, 0.25)),
+        "price: agree<=0.25 + model<=0.20":      dict(agree_band=(0.10, 0.25), model_band=(0.05, 0.20)),
+        "edge 0.12 + agree<=0.35":               dict(min_edge=0.12, agree_band=(0.10, 0.35)),
+        "edge 0.12 on top of agree<=0.30":       dict(min_edge=0.12, agree_band=(0.10, 0.30)),
+        "drop agree leg entirely":               dict(agree_band=(0.99, 1.0)),
+        "agree leg only above edge 0.15":        dict(min_edge=0.15),
+    },
+    # batch 10: the disagree legs have no edge requirement either -- they buy the model's best bucket at any price
+    # up to 0.45 regardless of whether the model's probability exceeds it. Same test, plus a finer agree sweep.
+    "b10": {
+        "LIVE":                                  dict(),
+        "dis_edge 0.00":                         dict(dis_edge=0.00),
+        "dis_edge 0.05":                         dict(dis_edge=0.05),
+        "dis_edge 0.10":                         dict(dis_edge=0.10),
+        "dis_edge 0.15":                         dict(dis_edge=0.15),
+        "dis_min_p 0.25":                        dict(dis_min_p=0.25),
+        "dis_min_p 0.35":                        dict(dis_min_p=0.35),
+        "min_edge 0.05 + dis_edge 0.00":         dict(min_edge=0.05, dis_edge=0.00),
+        "min_edge 0.05 + dis_edge 0.05":         dict(min_edge=0.05, dis_edge=0.05),
+        "min_edge 0.05 + dis_edge 0.10":         dict(min_edge=0.05, dis_edge=0.10),
+        "min_edge 0.12 + dis_edge 0.05":         dict(min_edge=0.12, dis_edge=0.05),
+        "min_edge 0.12 + dis_edge 0.10":         dict(min_edge=0.12, dis_edge=0.10),
+        "min_edge 0.15":                         dict(min_edge=0.15),
+        "min_edge 0.18":                         dict(min_edge=0.18),
+        "min_edge 0.22":                         dict(min_edge=0.22),
+        "min_edge 0.10":                         dict(min_edge=0.10),
+        "min_edge 0.07":                         dict(min_edge=0.07),
+        "min_edge 0.12 + w210":                  dict(min_edge=0.12, ridge_window=210),
+        "min_edge 0.12 + gain 0.05":             dict(min_edge=0.12, ewma_gain=0.05),
+        "min_edge 0.12 + pick_sd 0.75":          dict(min_edge=0.12, blend=1.0, blend_sd=0.75),
+    },
+    # batch 9: filters that move MANY trades, so the comparison is not decided by a handful of outcomes.
+    # The agree leg currently buys on any in-band price regardless of how confident the models are.
+    "b9": {
+        "LIVE":                                  dict(),
+        "min_p 0.25":                            dict(min_p=0.25),
+        "min_p 0.30":                            dict(min_p=0.30),
+        "min_p 0.35":                            dict(min_p=0.35),
+        "min_p 0.40":                            dict(min_p=0.40),
+        "min_edge 0.00":                         dict(min_edge=0.00),
+        "min_edge 0.03":                         dict(min_edge=0.03),
+        "min_edge 0.05":                         dict(min_edge=0.05),
+        "min_edge 0.08":                         dict(min_edge=0.08),
+        "min_edge 0.12":                         dict(min_edge=0.12),
+        "agree band 0.10-0.45":                  dict(agree_band=(0.10, 0.45)),
+        "agree band 0.10-0.50":                  dict(agree_band=(0.10, 0.50)),
+        "agree band 0.10-0.58":                  dict(agree_band=(0.10, 0.58)),
+        "agree band 0.10-0.65":                  dict(agree_band=(0.10, 0.65)),
+        "agree band 0.05-0.53":                  dict(agree_band=(0.05, 0.53)),
+        "agree band 0.15-0.53":                  dict(agree_band=(0.15, 0.53)),
+        "agree band 0.20-0.53":                  dict(agree_band=(0.20, 0.53)),
+        "min_edge 0.05 + min_p 0.30":            dict(min_edge=0.05, min_p=0.30),
+        "min_edge 0.05 + w210":                  dict(min_edge=0.05, ridge_window=210),
+        "min_p 0.30 + w210":                     dict(min_p=0.30, ridge_window=210),
+    },
+    # batch 8: locate the pick_sd optimum finely, test the same idea on the disagree legs, and check whether the
+    # effect survives without the window fine-tuning (which turned out to be noise at 5-day resolution).
+    "b8": {
+        "LIVE":                                  dict(),
+        "pick_sd 0.90":                          dict(blend=1.0, blend_sd=0.90),
+        "pick_sd 0.85":                          dict(blend=1.0, blend_sd=0.85),
+        "pick_sd 0.80":                          dict(blend=1.0, blend_sd=0.80),
+        "pick_sd 0.70":                          dict(blend=1.0, blend_sd=0.70),
+        "pick_sd 0.65":                          dict(blend=1.0, blend_sd=0.65),
+        "pick_sd 0.60":                          dict(blend=1.0, blend_sd=0.60),
+        "pick_sd 0.75 @ live w180":              dict(blend=1.0, blend_sd=0.75, ridge_window=180),
+        "pick_sd 0.75 + dis 0.75":               dict(blend=1.0, blend_sd=0.75, sd_pick_dis=0.75),
+        "pick_sd 0.75 + dis 0.50":               dict(blend=1.0, blend_sd=0.75, sd_pick_dis=0.50),
+        "pick_sd 0.75 + dis 0.25":               dict(blend=1.0, blend_sd=0.75, sd_pick_dis=0.25),
+        "pick_sd 0.75 + dis 0.00":               dict(blend=1.0, blend_sd=0.75, sd_pick_dis=0.00),
+        "dis 0.50 only":                         dict(sd_pick_dis=0.50),
+        "dis 0.25 only":                         dict(sd_pick_dis=0.25),
+        "pick_sd 0.75 + w200":                   dict(blend=1.0, blend_sd=0.75, ridge_window=200),
+        "pick_sd 0.75 + w210":                   dict(blend=1.0, blend_sd=0.75, ridge_window=210),
+        "pick_sd 0.75 + gain 0.05":              dict(blend=1.0, blend_sd=0.75, ewma_gain=0.05),
+        "pick_sd 0.75 + sd_window 90":           dict(blend=1.0, blend_sd=0.75, sd_window=90),
+        "pick_sd 0.75 + mos_mean_mh":            dict(blend=1.0, blend_sd=0.75, add=["mos_mean_mh"]),
+        "b0.8 pick_sd 0.75 + w195":              dict(blend=0.8, blend_sd=0.75, ridge_window=195),
+    },
     # batch 7: isolate ONLY the sd used to pick the bucket on agreement nights (the agreement test itself is
     # untouched). blend=1.0 keeps mu_e as the pick, so blend_sd=1.0 must reproduce LIVE exactly.
     "b7": {
@@ -411,8 +588,8 @@ if __name__ == "__main__":
         try:
             r = score(name, cfg, P); r["batch"] = batch
             recs.append(r)
-            print(f"[{i}/{len(BATCHES[batch])}] {name:<40} pnl {r['pnl']:8.0f} roi {r['roi']:6.3f} "
-                  f"F1 {r['F1_pnl']:7.0f} F2 {r['F2_pnl']:7.0f} F3 {r['F3_pnl']:7.0f}  "
+            print(f"[{i}/{len(BATCHES[batch])}] {name:<38} pnl {r['pnl']:8.0f} roi {r['roi']:6.3f} "
+                  f"F1 {r['F1_pnl']:6.0f} F2 {r['F2_pnl']:6.0f} F3 {r['F3_pnl']:6.0f} ndiff {r['n_diff']:5.0f} "
                   f"({(dt.datetime.now()-t0).seconds}s)", flush=True)
         except Exception as ex:
             print(f"[{i}] {name}: FAILED {ex.__class__.__name__}: {ex}", flush=True)
