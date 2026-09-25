@@ -404,7 +404,59 @@ def ewma_study():
     R.to_parquet("out/ewma_study.parquet")
 
 
+def oos_study():
+    """Out-of-sample check on every lever swept so far.
+
+    The walk-forward is already causal (each night fits only on earlier data), so what is NOT yet honest is the
+    HYPERPARAMETER choice: every table so far picked a setting by looking at the same period it was scored on.
+    Here each configuration is run once over the whole period and its trades are split: Jan 18 - Jun 30 selects,
+    Jul 1 - Sep 22 scores. The question that matters is not which config wins in the selection half, but whether
+    winning there predicts anything in the test half -- reported as the rank correlation across all configs."""
+    SEL_END = dt.date(2026, 6, 30)
+    cfgs = {"baseline (live)": {}}
+    for w in (90, 120, 150, 165, 180, 195, 210, 240, 270): cfgs[f"ridge_window {w}d"] = dict(ridge_window=w)
+    for h in (30, 60, 90, 120, 180):                        cfgs[f"ridge_halflife {h}d"] = dict(ridge_halflife=h)
+    for a in (5, 10, 50, 100):                              cfgs[f"ridge_alpha {a}"] = dict(ridge_alpha=a)
+    cfgs["seasonal doy"] = dict(seasonal=True); cfgs["per-city ridge"] = dict(per_city=True)
+    for g in (0.05, 0.1, 0.2):                              cfgs[f"ridge_bias EWMA {g}"] = dict(ridge_bias_gain=g)
+    for k in (0.02, 0.05, 0.10, 0.15, 0.20, 0.30):          cfgs[f"ewma gain {k}"] = dict(ewma_gain=k)
+    for w in (60, 120, 180):                                cfgs[f"ewma_window {w}d"] = dict(ewma_window=w)
+    for w in (21, 30):                                      cfgs[f"flat mean {w}"] = dict(flat_window=w)
+    for g in (0.10, 0.20):                                  cfgs[f"gain_floor {g}"] = dict(gain_floor=g)
+    for w in (90, 120, 180):                                cfgs[f"gain_window {w}d"] = dict(gain_window=w)
+    for w in (20, 30, 120):                                 cfgs[f"sd_window {w}"] = dict(sd_window=w)
+    cfgs["window 180 + alpha 50"] = dict(ridge_window=180, ridge_alpha=50)
+    cfgs["window 180 + gain 0.05"] = dict(ridge_window=180, ewma_gain=0.05)
+    rows = {}
+    for i, (name, mk) in enumerate(cfgs.items(), 1):
+        print(f"[{i}/{len(cfgs)}] {name}", flush=True)
+        T = run(forecasts(**mk))
+        sel = T[T.mday <= SEL_END]; tst = T[T.mday > SEL_END]
+        rows[name] = pd.Series(dict(n_sel=len(sel), pnl_sel=sel.pnl.sum(), roi_sel=sel.pnl.sum() / sel.stake.sum(),
+                                    n_test=len(tst), pnl_test=tst.pnl.sum(), roi_test=tst.pnl.sum() / tst.stake.sum(),
+                                    win_test=tst.won.mean()))
+    R = pd.DataFrame(rows).T
+    b = R.loc["baseline (live)"]
+    R["sel_vs_base"] = R.pnl_sel - b.pnl_sel; R["test_vs_base"] = R.pnl_test - b.pnl_test
+    print(f"\n=== out of sample: choose on Jan 18 - {SEL_END}, score on Jul 1 - {END} ===")
+    print(R.sort_values("pnl_sel", ascending=False).round(3).to_string())
+    rho = R.pnl_sel.corr(R.pnl_test, method="spearman"); pear = R.pnl_sel.corr(R.pnl_test)
+    print(f"\nDoes winning in the selection half predict the test half?")
+    print(f"  Spearman rank correlation across {len(R)} configs: {rho:+.3f}   (Pearson {pear:+.3f})")
+    top = R.sort_values("pnl_sel", ascending=False).head(5)
+    print(f"\nthe 5 configs you would have PICKED on Jan-Jun, and what they then did Jul-Sep:")
+    print(top[["pnl_sel", "sel_vs_base", "pnl_test", "test_vs_base", "roi_test"]].round(2).to_string())
+    print(f"\nbaseline: selection ${b.pnl_sel:.0f}, test ${b.pnl_test:.0f} on {int(b.n_test)} trades")
+    best_sel = R.pnl_sel.idxmax()
+    print(f"pick by selection half -> '{best_sel}': test ${R.loc[best_sel,'pnl_test']:.0f} "
+          f"({R.loc[best_sel,'test_vs_base']:+.0f} vs baseline)")
+    print(f"best possible in the test half (not knowable in advance) -> '{R.pnl_test.idxmax()}': ${R.pnl_test.max():.0f}")
+    R.to_parquet("out/oos_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("OOS_ONLY") == "1":
+        oos_study(); raise SystemExit
     if os.environ.get("EWMA_ONLY") == "1":
         ewma_study(); raise SystemExit
     if os.environ.get("WEIGHT_ONLY") == "1":
