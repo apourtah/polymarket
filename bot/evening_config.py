@@ -33,6 +33,15 @@ CASH_RESERVE = 2.0                # keep this much USDC free after funding an or
 # --- model ---
 EWMA_GAINS = [0.05, 0.1, 0.2, 0.3, 0.5, 0.7]
 RIDGE_ALPHA = 20.0
+RIDGE_WINDOW = 180                # fit the ridge on the last N days only (the EWMA still sees all history: more is
+                                  # strictly better there, model_variants_backtest.py EWMA_ONLY=1). The ridge has no
+                                  # forgetting of its own, so it stayed anchored to a cold-biased spring: its bias ran
+                                  # -0.33 (Feb-Jun) to +0.54 (Sep), by city Austin +1.59F, LA +1.25F, Miami +0.85F.
+                                  # Out of sample (choose on Jan-Jun, score Jul-Sep, OOS_ONLY=1) every window in
+                                  # 150-210d beat the unwindowed fit: +$142/+$226/+$204/+$216/+$164. 180 = mid-plateau,
+                                  # not the argmax. NB in that same test, picking any setting by backtest P&L did NOT
+                                  # transfer (rank corr +0.28; the in-sample winner lost $353) -- this lever is taken on
+                                  # the measured drift plus the out-of-sample plateau, not on a sweep win.
 MIN_HISTORY_DAYS = 60
 FEATS = ['hrrr','dew','rhum','wind','cloud','rad','pres','precip','wdir_s','wdir_c','dpd','t_morn','cloud_morn','yday_max','yday_min','yday_err','e2','r5','r14','nbm_minus_hrrr','gfs_minus_hrrr','doy']
 # --- endpoints ---

@@ -75,11 +75,17 @@ class Models:
                 s = float(np.sum(np.square(se)))
                 if best is None or s < best[0]: best = (s, k, b, np.std(se[-60:]))
             self.ewma[c] = (best[1], best[2]); self.ewma_sd[c] = max(best[3], 1.0)
-        X = self.hist[C.FEATS].copy(); self.med = X.median().fillna(0); X = X.fillna(self.med); self.mu = X.mean(); self.sd = X.std().replace(0, 1)
-        Z = np.c_[((X - self.mu) / self.sd).values, pd.get_dummies(self.hist.city).reindex(columns=self.cities, fill_value=0).values]
-        self.ridge = Ridge(alpha=C.RIDGE_ALPHA).fit(Z, self.hist.err.values)
-        res = self.hist.err.values - self.ridge.predict(Z)
-        for c in self.cities: self.ridge_sd[c] = max(float(np.std(res[(self.hist.city == c).values][-60:])), 1.0)
+        R = self.hist                                                    # the ridge forgets; the EWMA above does not
+        if getattr(C, "RIDGE_WINDOW", None):
+            W = R[R.mday > max(R.mday) - dt.timedelta(days=C.RIDGE_WINDOW)]
+            if len(W) >= 200: R = W
+        X = R[C.FEATS].copy(); self.med = X.median().fillna(0); X = X.fillna(self.med); self.mu = X.mean(); self.sd = X.std().replace(0, 1)
+        Z = np.c_[((X - self.mu) / self.sd).values, pd.get_dummies(R.city).reindex(columns=self.cities, fill_value=0).values]
+        self.ridge = Ridge(alpha=C.RIDGE_ALPHA).fit(Z, R.err.values)
+        res = R.err.values - self.ridge.predict(Z)
+        for c in self.cities:
+            m = (R.city == c).values
+            self.ridge_sd[c] = max(float(np.std(res[m][-60:])) if m.any() else 1.0, 1.0)
     def predict(self, city, feats):
         x = pd.Series({f: feats.get(f, np.nan) for f in C.FEATS}).fillna(self.med)
         z = np.r_[((x - self.mu) / self.sd).values, [1.0 if c == city else 0.0 for c in self.cities]]
