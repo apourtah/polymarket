@@ -88,13 +88,48 @@ def prices_for(city, d):
     return _px[(city, d)]
 
 
+# ---------------------------------------------------------------- external seasonal prior
+def seasonal_prior(exclude_year=2026, k=60.0, path="out/seasonality_pairs.parquet"):
+    """{(city, month): F} -- the day-ahead bias SHAPE by month, from seasonality.py's four-year series.
+
+    Only the shape is used: each city's own annual mean is removed, because the LEVEL differs between the proxy
+    (Open-Meteo best_match) and the bot's HRRR, and the level is what the EWMA already tracks. What the models
+    cannot know in advance is the TURN -- how the bias moves from this month to the next -- and that is what this
+    supplies. Sparse city-months are shrunk toward the pooled profile by n/(n+k). Years >= exclude_year are left
+    out so nothing leaks from the period being scored."""
+    if not os.path.exists(path): return {}
+    D = pd.read_parquet(path)
+    D = D[D.year < exclude_year]
+    if not len(D): return {}
+    city_mean = D.groupby("city").err.mean()
+    D = D.assign(anom=D.err - D.city.map(city_mean))
+    pooled = D.groupby("month").anom.mean()
+    g = D.groupby(["city", "month"]).anom.agg(["mean", "size"])
+    out = {}
+    for (c, m), r in g.iterrows():
+        lam = r["size"] / (r["size"] + k)
+        out[(c, m)] = lam * r["mean"] + (1 - lam) * pooled.get(m, 0.0)
+    out["_pooled"] = pooled.to_dict()
+    return out
+
+def prior_at(prior, city, month):
+    if not prior: return 0.0
+    if (city, month) in prior: return float(prior[(city, month)])
+    return float(prior.get("_pooled", {}).get(month, 0.0))
+
+
 # ---------------------------------------------------------------- the model, parameterised
 class Models:
     def __init__(self, hist, gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None,
                  ridge_window=None, ridge_halflife=None, ridge_alpha=None, seasonal=False,
-                 per_city=False, ridge_bias_gain=None, ewma_window=None, ewma_gain=None, flat_window=None):
+                 per_city=False, ridge_bias_gain=None, ewma_window=None, ewma_gain=None, flat_window=None,
+                 prior=None, prior_mode=None):
         self.hist = hist.dropna(subset=["err"]).copy(); self.cities = sorted(self.hist.city.unique())
         self.seasonal = seasonal; self.per_city = per_city
+        self.prior = prior or {}; self.prior_mode = prior_mode
+        self.hist["_pri"] = [prior_at(self.prior, c, m.month) for c, m in zip(self.hist.city, pd.to_datetime(self.hist.mday))]
+        if prior_mode in ("offset", "offset_ridge", "offset_ewma"):
+            self.hist = self.hist.assign(err=self.hist.err - self.hist._pri)   # model the anomaly, add the prior back later
         self.ewma = {}; self.ewma_sd = {}; self.ridge_sd = {}
         for c in self.cities:
             fl = gain_floor if (floor_cities is None or c in floor_cities) else 0.0   # per-city floor
@@ -102,7 +137,7 @@ class Models:
             ce = self.hist[self.hist.city == c].sort_values("mday")
             if ewma_window:                                                   # only the last N days of error history
                 ce = ce[ce.mday > ce.mday.max() - dt.timedelta(days=ewma_window)]
-            e = ce.err.values
+            e = (ce.err + ce._pri).values if prior_mode == "offset_ridge" else ce.err.values
             if len(e) == 0: self.ewma[c] = (gains[0], 0.0); self.ewma_sd[c] = 1.0; continue
             if flat_window:                                                   # equal weight inside a window, no decay
                 se = [x - (np.mean(e[max(0, i - flat_window):i]) if i else 0.0) for i, x in enumerate(e)]
@@ -121,6 +156,8 @@ class Models:
             R = R[R.mday > R.mday.max() - dt.timedelta(days=ridge_window)]
             if len(R) < 200: R = self.hist
         self.rhist = R
+        self.win_pri = float(R._pri.mean()) if len(R) else 0.0
+        ytar = (R.err + R._pri).values if prior_mode == "offset_ewma" else R.err.values   # only the EWMA saw the anomaly
         X = self.feats(R); self.med = X.median().fillna(0); X = X.fillna(self.med)
         self.mu = X.mean(); self.sd = X.std().replace(0, 1)
         alpha = C.RIDGE_ALPHA if ridge_alpha is None else ridge_alpha
@@ -134,13 +171,13 @@ class Models:
             for c in self.cities:
                 m = cv == c
                 fit = m if m.sum() >= 60 else np.ones(len(R), bool)           # too few rows: fall back to the pooled sample
-                self.ridge[c] = Ridge(alpha=alpha).fit(Xn[fit], R.err.values[fit], sample_weight=None if w is None else w[fit])
+                self.ridge[c] = Ridge(alpha=alpha).fit(Xn[fit], ytar[fit], sample_weight=None if w is None else w[fit])
                 if m.sum(): pred[m] = self.ridge[c].predict(Xn[m])            # batched, not row by row
         else:
             Z = np.c_[Xn, pd.get_dummies(R.city).reindex(columns=self.cities, fill_value=0).values]
-            self.ridge = Ridge(alpha=alpha).fit(Z, R.err.values, sample_weight=w)
+            self.ridge = Ridge(alpha=alpha).fit(Z, ytar, sample_weight=w)
             pred = self.ridge.predict(Z)
-        res = R.err.values - pred
+        res = ytar - pred
         self.ridge_bias = {}
         for c in self.cities:
             m = (R.city == c).values
@@ -151,20 +188,30 @@ class Models:
             self.ridge_bias[c] = b
     def feats(self, df):
         X = df[C.FEATS].copy()
+        if self.prior_mode == "feature": X["prior"] = df["_pri"].values
         if self.seasonal:                                                    # doy is linear in FEATS; give the fit a real season
             X["doy_s"] = np.sin(2 * np.pi * df.doy / 365.25); X["doy_c"] = np.cos(2 * np.pi * df.doy / 365.25)
         return X
 
     def predict(self, city, feats):
         cols = list(self.med.index)
+        md = feats.get("mday")
+        month = pd.Timestamp(md).month if md is not None else max(1, min(12, int(feats.get("doy", 1)) // 31 + 1))
+        pri = prior_at(self.prior, city, month)
         x = pd.Series({f: feats.get(f, np.nan) for f in cols})
+        if self.prior_mode == "feature": x["prior"] = pri
         if self.seasonal:
             d = feats.get("doy", 1); x["doy_s"] = np.sin(2 * np.pi * d / 365.25); x["doy_c"] = np.cos(2 * np.pi * d / 365.25)
         x = x.reindex(cols).fillna(self.med); xn = ((x - self.mu) / self.sd).values
         if self.per_city: r = float(self.ridge[city].predict(xn[None, :])[0])
         else: r = float(self.ridge.predict(np.r_[xn, [1.0 if c == city else 0.0 for c in self.cities]][None, :])[0])
-        return dict(ewma=self.ewma[city][1], ridge=r + self.ridge_bias.get(city, 0.0),
-                    ewma_sd=self.ewma_sd[city], ridge_sd=self.ridge_sd[city])
+        e = self.ewma[city][1]; r = r + self.ridge_bias.get(city, 0.0)
+        if self.prior_mode == "offset": e, r = e + pri, r + pri              # both models fitted on the anomaly
+        elif self.prior_mode == "offset_ridge": r = r + pri                  # ridge only
+        elif self.prior_mode == "offset_ewma": e = e + pri
+        elif self.prior_mode == "delta": r = r + (pri - self.win_pri)        # season has moved since the fit window
+        elif self.prior_mode == "delta_both": e, r = e + (pri - self.win_pri), r + (pri - self.win_pri)
+        return dict(ewma=e, ridge=r, ewma_sd=self.ewma_sd[city], ridge_sd=self.ridge_sd[city])
 
 def bucket_probs(mu, sd, buckets):
     return {b: norm.cdf((min(b[1], 200) + 0.5 - mu) / sd) - norm.cdf((max(b[0], -200) - 0.5 - mu) / sd) for b in buckets}
@@ -175,8 +222,12 @@ _fc = {}
 def forecasts(gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None, **mk):
     """Walk-forward mu/sd per traded city-day for one model configuration (cached)."""
     all_cities = mk.pop("all_cities", False)
+    def _k(v):                                                   # the prior is a dict: summarise it for the cache key
+        if isinstance(v, dict): return ("prior", len(v), round(sum(x for x in v.values() if isinstance(x, (int, float))), 6))
+        if isinstance(v, (set, frozenset)): return tuple(sorted(v))
+        return v
     key = (gain_floor, gain_window, sd_window, tuple(sorted(floor_cities)) if floor_cities else None,
-           tuple(sorted(mk.items())), all_cities)
+           tuple(sorted((k, _k(v)) for k, v in mk.items())), all_cities)
     if key in _fc: return _fc[key]
     rows = []
     for d in sorted(x for x in P.mday.unique() if START <= x <= END):
@@ -516,7 +567,51 @@ def simple_study():
     R.to_parquet("out/simple_study.parquet")
 
 
+def fusion_study():
+    """Combine the adaptive models with the external seasonal profile.
+
+    A trailing window can only LEARN a shift once it has begun, so at every season turn it is behind by
+    construction -- and the pooled profile says the turn is real: the bias moves -0.70 (Sep) -> +0.23 (Oct) ->
+    +0.86 (Nov). The four-year prior knows that in advance. Fusion modes:
+      feature       the month's prior handed to the ridge as another column
+      offset        both models fitted on the anomaly err - prior, prior added back at prediction
+      offset_ridge  only the ridge fitted on the anomaly (the EWMA keeps chasing the raw level)
+      offset_ewma   only the EWMA
+      delta         shift the ridge by prior(target month) - mean prior over its own fit window: an explicit
+                    correction for the season having moved on since the data it was fitted to
+      delta_both    the same shift applied to both models
+    The prior is built only from 2022-2025, so nothing leaks into the Jul-Sep 2026 scoring window."""
+    SEL = dt.date(2026, 6, 30)
+    pri = seasonal_prior(exclude_year=2026)
+    if not pri: print("no seasonality_pairs.parquet -- run seasonality.py first"); return
+    rows = {}
+    def add(name, **mk):
+        T = run(forecasts(**mk)); s_, t_ = T[T.mday <= SEL], T[T.mday > SEL]
+        F = forecasts(**mk)
+        rows[name] = pd.Series(dict(n_sel=len(s_), roi_sel=s_.pnl.sum() / s_.stake.sum(),
+                                    n_test=len(t_), pnl_test=t_.pnl.sum(), roi_test=t_.pnl.sum() / t_.stake.sum(),
+                                    win_test=t_.won.mean(),
+                                    ridge_mae=F[F.mday > SEL].res_r.abs().mean(),
+                                    ewma_mae=F[F.mday > SEL].res_e.abs().mean()))
+        print(f"  {name}", flush=True)
+    add("baseline (live, no prior)")
+    add("ridge_window 180 (current live)", ridge_window=180)
+    for m in ("feature", "offset", "offset_ridge", "offset_ewma", "delta", "delta_both"):
+        add(f"prior {m}", prior=pri, prior_mode=m)
+    for m in ("feature", "offset", "offset_ridge", "delta", "delta_both"):
+        add(f"prior {m} + window 180", prior=pri, prior_mode=m, ridge_window=180)
+    R = pd.DataFrame(rows).T
+    b = R.loc["ridge_window 180 (current live)"]
+    R["vs_live"] = R.pnl_test - b.pnl_test
+    print(f"\n=== seasonal prior x adaptive model, scored out of sample (Jul 1 - {END}) ===")
+    print(R.sort_values("pnl_test", ascending=False).round(3).to_string())
+    print(f"\nvs_live is against ridge_window 180, which is what the bot runs now (${b.pnl_test:.0f}).")
+    R.to_parquet("out/fusion_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("FUSION_ONLY") == "1":
+        fusion_study(); raise SystemExit
     if os.environ.get("SIMPLE_ONLY") == "1":
         simple_study(); raise SystemExit
     if os.environ.get("OOS_ONLY") == "1":
