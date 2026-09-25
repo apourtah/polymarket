@@ -58,9 +58,10 @@ def bucket(q):
     if mm.group(4): return (int(mm.group(4)), 999)
     return (int(mm.group(5)), int(mm.group(5)))
 
+ALL_CITIES = sorted(pd.read_parquet(HIST).city.unique())
 MK = {}
 for m in json.load(open("data/markets.json")):
-    if not re.search(rf'highest temperature in ({"|".join(TRADE)}) be ', m["question"] or "") or not m.get("closed"): continue
+    if not re.search(rf'highest temperature in ({"|".join(ALL_CITIES)}) be ', m["question"] or "") or not m.get("closed"): continue
     city = re.search(r"temperature in (.+?) be ", m["question"]).group(1); d = dt.date.fromisoformat(m["end_date"][:10])
     MK.setdefault((city, d), {})[bucket(m["question"])] = m
 
@@ -173,15 +174,16 @@ def bucket_probs(mu, sd, buckets):
 _fc = {}
 def forecasts(gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None, **mk):
     """Walk-forward mu/sd per traded city-day for one model configuration (cached)."""
+    all_cities = mk.pop("all_cities", False)
     key = (gain_floor, gain_window, sd_window, tuple(sorted(floor_cities)) if floor_cities else None,
-           tuple(sorted(mk.items())))
+           tuple(sorted(mk.items())), all_cities)
     if key in _fc: return _fc[key]
     rows = []
     for d in sorted(x for x in P.mday.unique() if START <= x <= END):
         H = P[P.mday < d]
         if len(H) < C.MIN_HISTORY_DAYS: continue
         M = Models(H, gain_floor, gain_window, sd_window, floor_cities, **mk)
-        for c in TRADE:
+        for c in (ALL_CITIES if all_cities else TRADE):
             r = P[(P.city == c) & (P.mday == d)]
             if r.empty: continue
             r = r.iloc[0]; p = M.predict(c, r.to_dict())
@@ -202,7 +204,10 @@ def trailing_bias(F, k):
 
 
 # ---------------------------------------------------------------- stage 2: the production rule
-def run(F, bias_k=0, bias_gate=None, bias_shift=0.0):
+def run(F, bias_k=0, bias_gate=None, bias_shift=0.0, modes_all=None, band=None, single=None):
+    """modes_all: apply this mode set to every city instead of C.MODES (drops the per-city leg assignment).
+    band: one (lo, hi) price band for every leg instead of the separately tuned agree / model bands.
+    single: 'ewma' | 'ridge' | 'avg' | 'fav' -- ignore the agreement structure and buy that one bucket."""
     F = trailing_bias(F, bias_k) if bias_k else F.assign(bias_e=np.nan, bias_r=np.nan)
     trades = []
     for r in F.itertuples():
@@ -215,12 +220,26 @@ def run(F, bias_k=0, bias_gate=None, bias_shift=0.0):
         buckets = list(pr)
         Pe = bucket_probs(r.mu_e + be_shift, r.sd_e, buckets); Pr = bucket_probs(r.mu_r + br_shift, r.sd_r, buckets)
         be, br = max(Pe, key=Pe.get), max(Pr, key=Pr.get); agree = be == br
-        modes = C.MODES.get(r.city, {"agree", "edge"}); spent = 0.0
+        modes = modes_all if modes_all is not None else C.MODES.get(r.city, {"agree", "edge"}); spent = 0.0
+        if single:                                                     # one bucket, no agreement structure at all
+            if single == "ewma": pick = be
+            elif single == "ridge": pick = br
+            elif single == "fav": pick = max(buckets, key=lambda b: pr[b][0])
+            else:
+                Pa = bucket_probs((r.mu_e + r.mu_r) / 2, (r.sd_e + r.sd_r) / 2, buckets); pick = max(Pa, key=Pa.get)
+            ask, won = pr[pick]
+            lo, hi = band if band else (C.MODEL_MIN_PRICE, C.AGREE_MAX_PRICE)
+            if not (lo <= ask <= hi): continue
+            sh = C.STAKE / ask; fee = 0.05 * ask * (1 - ask) * sh
+            trades.append(dict(city=r.city, mday=r.mday, why=single, price=ask, stake=C.STAKE, won=won,
+                               pnl=(sh - C.STAKE if won else -C.STAKE) - fee)); continue
+        alo, ahi = band if band else (C.AGREE_MIN_PRICE, C.AGREE_MAX_PRICE)
+        mlo, mhi = band if band else (C.MODEL_MIN_PRICE, MODEL_MAX)
         for b in buckets:
             ask, won = pr[b]; why = None
-            if agree and "agree" in modes and b == be and C.AGREE_MIN_PRICE <= ask <= C.AGREE_MAX_PRICE: why = "agree"
-            elif not agree and "ridge" in modes and b == br and C.MODEL_MIN_PRICE <= ask <= MODEL_MAX: why = "dis_ridge"
-            elif not agree and "ewma" in modes and b == be and C.MODEL_MIN_PRICE <= ask <= MODEL_MAX: why = "dis_ewma"
+            if agree and "agree" in modes and b == be and alo <= ask <= ahi: why = "agree"
+            elif not agree and "ridge" in modes and b == br and mlo <= ask <= mhi: why = "dis_ridge"
+            elif not agree and "ewma" in modes and b == be and mlo <= ask <= mhi: why = "dis_ewma"
             if not why: continue
             stake = min(C.STAKE, C.MAX_PER_MARKET_USD, C.MAX_PER_CITY_DAY_USD - spent)
             if stake < C.MIN_ORDER_SHARES * ask: continue
@@ -454,7 +473,52 @@ def oos_study():
     R.to_parquet("out/oos_study.parquet")
 
 
+def simple_study():
+    """Strip out the choices that were themselves fitted on the backtest, and see what survives out of sample.
+
+    Fitted on the same 8 months the rule was scored on: the per-city EWMA gain (SSE selection), the per-city MODES
+    table, which 7 of 11 cities to trade, and the two price bands. Each version below removes one more of those.
+    Selection half Jan 18 - Jun 30 is shown only for reference -- these versions have nothing left to select, so
+    the Jul 1 - Sep 22 column is the result. Trade counts vary hugely, so ROI is the comparable number."""
+    SEL_END = dt.date(2026, 6, 30)
+    ALL3 = {"agree", "ridge", "ewma"}
+    rows = {}
+    def add(name, fk=None, **rk):
+        T = run(forecasts(**(fk or {})), **rk)
+        sel = T[T.mday <= SEL_END]; tst = T[T.mday > SEL_END]
+        rows[name] = pd.Series(dict(
+            n_sel=len(sel), roi_sel=sel.pnl.sum() / sel.stake.sum() if len(sel) else np.nan,
+            n_test=len(tst), stake_test=tst.stake.sum(), pnl_test=tst.pnl.sum(),
+            roi_test=tst.pnl.sum() / tst.stake.sum() if len(tst) else np.nan,
+            win_test=tst.won.mean() if len(tst) else np.nan))
+    print("A: removing the fitted choices one at a time", flush=True)
+    add("A0 live: per-city gain + per-city modes + 7 cities + tuned bands")
+    add("A1  + one fixed gain 0.05 everywhere", fk=dict(ewma_gain=0.05))
+    add("A2  + one fixed gain 0.10 everywhere", fk=dict(ewma_gain=0.10))
+    add("A3  A2, no per-city modes (every city trades all 3 legs)", fk=dict(ewma_gain=0.10), modes_all=ALL3)
+    add("A4  A3, every city with markets (11, not the chosen 7)", fk=dict(ewma_gain=0.10, all_cities=True), modes_all=ALL3)
+    add("A5  A4, one band 0.05-0.55 for every leg", fk=dict(ewma_gain=0.10, all_cities=True), modes_all=ALL3, band=(0.05, 0.55))
+    add("A6  A5 + ridge_window 180", fk=dict(ewma_gain=0.10, all_cities=True, ridge_window=180), modes_all=ALL3, band=(0.05, 0.55))
+    print("B: no agreement structure -- one model, one bucket", flush=True)
+    for sg in ("ewma", "ridge", "avg"):
+        add(f"B  {sg}-only best bucket, all cities, band 0.05-0.55",
+            fk=dict(ewma_gain=0.10, all_cities=True), band=(0.05, 0.55), single=sg)
+    add("B  avg best bucket + ridge_window 180",
+        fk=dict(ewma_gain=0.10, all_cities=True, ridge_window=180), band=(0.05, 0.55), single="avg")
+    print("C: null model", flush=True)
+    add("C  market favourite, no model at all", fk=dict(all_cities=True), band=(0.05, 0.55), single="fav")
+    R = pd.DataFrame(rows).T
+    R.columns = ["n_sel", "roi_sel", "n_test", "stake_test", "pnl_test", "roi_test", "win_test"]
+    R["per_$100"] = 100 * R.pnl_test / R.stake_test
+    print(f"\n=== simplified models, scored out of sample (Jul 1 - {END}) ===")
+    print(R.round(3).to_string())
+    print("\nroi_test is the number to compare; pnl_test scales with how many trades a version takes.")
+    R.to_parquet("out/simple_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("SIMPLE_ONLY") == "1":
+        simple_study(); raise SystemExit
     if os.environ.get("OOS_ONLY") == "1":
         oos_study(); raise SystemExit
     if os.environ.get("EWMA_ONLY") == "1":
