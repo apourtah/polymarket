@@ -144,7 +144,9 @@ def walk(P, cfg):
 
 def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg",
          sd_pick=None, sd_pick_dis=None, min_p=None, min_edge=None, agree_band=None,
-         dis_edge=None, dis_min_p=None, model_band=None, modes=None, P=None):
+         dis_edge=None, dis_min_p=None, model_band=None, modes=None,
+         stake_mode="flat", kelly_frac=0.5, edge_mult=4.0, stake_cap=None,
+         no_leg=False, no_band=(0.35, 0.55), P=None):
     """The trading rule, with the agreement STRUCTURE opened up.
 
     Live: buy when the two models' argmax bucket is identical ("agree"), else follow the configured model.
@@ -192,7 +194,7 @@ def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg
                 sb = (se + sr) / 2 if blend_sd == "avg" else (blend * se + (1 - blend) * sr if blend_sd == "mix" else se)
             Pb = MV.bucket_probs(blend * r.mu_e + (1 - blend) * r.mu_r, sb, bk)
             pick_agree = max(Pb, key=Pb.get)
-        mo = (modes or C.MODES).get(r.city, set()); spent = 0.0
+        mo = (modes or C.MODES).get(r.city, set()); spent = 0.0; yes_leg = None
         alo, ahi = agree_band if agree_band else (C.AGREE_MIN_PRICE, C.AGREE_MAX_PRICE)
         mlo, mhi = model_band if model_band else (C.MODEL_MIN_PRICE, C.MODEL_MAX_PRICE)
         for b in bk:
@@ -211,16 +213,37 @@ def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg
                 if dis_min_p is not None and Pe[b] < dis_min_p: continue
                 why = "dis_ewma"
             if not why: continue
-            stake = min(C.STAKE, C.MAX_PER_MARKET_USD, C.MAX_PER_CITY_DAY_USD - spent)
+            # stake sizing: the live rule bets a flat $10 regardless of how good the bet looks.
+            pmod = pav if why == "agree" else (Pr[b] if why == "dis_ridge" else Pe[b])
+            if stake_mode == "kelly":                       # f* = (p - ask) / (1 - ask) on a binary at price `ask`
+                f = max(0.0, (pmod - ask) / max(1 - ask, 1e-6)) * kelly_frac
+                want = C.STAKE * 4 * f                      # scaled so the average bet lands near the live stake
+            elif stake_mode == "edge":  want = C.STAKE * max(0.0, 1 + edge_mult * (pmod - ask))
+            elif stake_mode == "shares": want = C.STAKE * (ask / 0.30)      # constant shares, not constant dollars
+            elif stake_mode == "prob":  want = C.STAKE * (pmod / 0.35)
+            else: want = C.STAKE
+            stake = min(want, stake_cap or C.MAX_PER_MARKET_USD, C.MAX_PER_CITY_DAY_USD - spent)
             if stake < C.MIN_ORDER_SHARES * ask: continue
             spent += stake; sh = stake / ask; fee = 0.05 * ask * (1 - ask) * sh
             trades.append(dict(city=r.city, mday=r.mday, why=why, price=ask, stake=stake, won=won,
                                pnl=(sh - stake if won else -stake) - fee))
+            yes_leg = (b, ask, sh, why)
+        # NO leg (production rule H, never modelled in this harness): alongside a disagree YES leg, sell the
+        # market favourite when it is WARMER than our bucket. NO price = 1 - YES; the NO wins if that bucket loses.
+        if no_leg and "yes_leg" in dir() and yes_leg and yes_leg[3] in ("dis_ridge", "dis_ewma"):
+            fav = max(bk, key=lambda x: pr[x][0])
+            if fav[0] > yes_leg[0][0] and no_band[0] <= pr[fav][0] <= no_band[1]:
+                nask = 1 - pr[fav][0]; nwon = not pr[fav][1]
+                nstake = min(yes_leg[2] * nask, C.MAX_PER_CITY_DAY_USD - spent)
+                if nstake >= C.MIN_ORDER_SHARES * nask:
+                    nsh = nstake / nask; nfee = 0.05 * nask * (1 - nask) * nsh
+                    trades.append(dict(city=r.city, mday=r.mday, why="no_fav", price=nask, stake=nstake, won=nwon,
+                                       pnl=(nsh - nstake if nwon else -nstake) - nfee))
     return pd.DataFrame(trades)
 
 
 def score(name, cfg, P):
-    rk = {k: v for k, v in cfg.items() if k in ("agree_tol", "third", "blend", "sd_spread", "blend_sd", "sd_pick", "sd_pick_dis", "min_p", "min_edge", "agree_band", "dis_edge", "dis_min_p", "model_band", "modes")}
+    rk = {k: v for k, v in cfg.items() if k in ("agree_tol", "third", "blend", "sd_spread", "blend_sd", "sd_pick", "sd_pick_dis", "min_p", "min_edge", "agree_band", "dis_edge", "dis_min_p", "model_band", "modes", "stake_mode", "kelly_frac", "edge_mult", "stake_cap", "no_leg", "no_band")}
     F = walk(P, cfg)
     if rk:
         ex = P[["city", "mday", "nbm_max", "mos_spread"]].rename(columns={"nbm_max": "mu_n"})
@@ -243,6 +266,85 @@ def score(name, cfg, P):
 
 
 BATCHES = {
+    # batch 17: the edge-sizing multiplier was picked by hand. Sweep it, sweep the cap, and check the whole family
+    # rather than the one constant -- a hand-chosen constant that only works at one value is the failure mode that
+    # sank pick_sd twice.
+    "b17": (lambda W={"ewma"}, D=None: {
+        "LIVE":                                  dict(),
+        "edge mult 1":                           dict(stake_mode="edge", edge_mult=1),
+        "edge mult 2":                           dict(stake_mode="edge", edge_mult=2),
+        "edge mult 3":                           dict(stake_mode="edge", edge_mult=3),
+        "edge mult 4 (hand-picked)":             dict(stake_mode="edge", edge_mult=4),
+        "edge mult 5":                           dict(stake_mode="edge", edge_mult=5),
+        "edge mult 6":                           dict(stake_mode="edge", edge_mult=6),
+        "edge mult 8":                           dict(stake_mode="edge", edge_mult=8),
+        "edge mult 4, cap $15":                  dict(stake_mode="edge", edge_mult=4, stake_cap=15),
+        "edge mult 4, cap $25":                  dict(stake_mode="edge", edge_mult=4, stake_cap=25),
+        "edge mult 4, cap $30":                  dict(stake_mode="edge", edge_mult=4, stake_cap=30),
+        "edge mult 6, cap $25":                  dict(stake_mode="edge", edge_mult=6, stake_cap=25),
+        "edge mult 8, cap $30":                  dict(stake_mode="edge", edge_mult=8, stake_cap=30),
+        "drop weak + mult 2":                    dict(stake_mode="edge", edge_mult=2, modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "drop weak + mult 3":                    dict(stake_mode="edge", edge_mult=3, modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "drop weak + mult 4":                    dict(stake_mode="edge", edge_mult=4, modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "drop weak + mult 6":                    dict(stake_mode="edge", edge_mult=6, modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "drop weak + mult 4 + NO leg":           dict(stake_mode="edge", edge_mult=4, no_leg=True, modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "drop weak + mult 6 + cap 25 + NO":      dict(stake_mode="edge", edge_mult=6, stake_cap=25, no_leg=True, modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "edge mult 4 + NO leg":                  dict(stake_mode="edge", edge_mult=4, no_leg=True),
+    })(),
+    # batch 16: two things never tested here. (a) sizing -- the live rule bets a flat $10 whatever the edge.
+    # (b) the NO leg (production rule H), which runs live but has never been in this harness.
+    "b16": (lambda W={"ewma"}: {
+        "LIVE":                                  dict(),
+        "stake: kelly 0.25":                     dict(stake_mode="kelly", kelly_frac=0.25),
+        "stake: kelly 0.50":                     dict(stake_mode="kelly", kelly_frac=0.50),
+        "stake: kelly 1.00":                     dict(stake_mode="kelly", kelly_frac=1.00),
+        "stake: proportional to edge":           dict(stake_mode="edge"),
+        "stake: proportional to model P":        dict(stake_mode="prob"),
+        "stake: constant shares":                dict(stake_mode="shares"),
+        "NO leg on (rule H)":                    dict(no_leg=True),
+        "NO leg, band 0.30-0.60":                dict(no_leg=True, no_band=(0.30, 0.60)),
+        "NO leg, band 0.40-0.55":                dict(no_leg=True, no_band=(0.40, 0.55)),
+        "NO leg, band 0.35-0.65":                dict(no_leg=True, no_band=(0.35, 0.65)),
+        "drop weak agree + NO leg":              dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()}), no_leg=True),
+        "drop weak agree + kelly 0.5":           dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()}), stake_mode="kelly"),
+        "drop weak agree + edge sizing":         dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()}), stake_mode="edge"),
+        "kelly 0.5 + NO leg":                    dict(stake_mode="kelly", no_leg=True),
+        "edge sizing + NO leg":                  dict(stake_mode="edge", no_leg=True),
+        "drop weak agree + kelly + NO":          dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()}), stake_mode="kelly", no_leg=True),
+        "kelly 0.5 + w210":                      dict(stake_mode="kelly", ridge_window=210),
+        "edge sizing + min_edge 0.05":           dict(stake_mode="edge", min_edge=0.05),
+        "kelly 0.5 + min_edge 0.05":             dict(stake_mode="kelly", min_edge=0.05),
+    })(),
+    # batch 14: the three weak cells are all the AGREE leg (LA .047, Austin .086, Seattle .163). Rather than just
+    # deleting them -- which retires Seattle, an agree-only city -- replace them with the disagree legs those
+    # cities do not currently have, and see whether the ROI gain survives while P&L is recovered.
+    "b14": (lambda W={"ewma"}, R={"ridge"}, DE={"ewma","ridge"}, E={"agree","ewma"}, B={"agree","ewma","ridge"}: {
+        "LIVE":                                    dict(),
+        "drop agree: LA+Aus+Sea (ROI leader)":     dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": set()})),
+        "LA,Aus -> ewma only; Sea -> ewma only":   dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W})),
+        "LA,Aus -> ewma only; Sea -> ridge only":  dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": R})),
+        "LA,Aus -> ewma only; Sea -> both dis":    dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": DE})),
+        "+ Miami -> ewma only":                    dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W, "Miami": W})),
+        "+ Miami -> ridge only":                   dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W, "Miami": R})),
+        "+ Miami keeps agree":                     dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W})),
+        "all cities: disagree legs only":          dict(modes={c: DE for c in C.CITIES}),
+        "all cities: ewma only":                   dict(modes={c: W for c in C.CITIES}),
+        "all cities: ridge only":                  dict(modes={c: R for c in C.CITIES}),
+        "LA,Aus,Sea -> ewma; keep Chi+Mia agree":  dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W})),
+        "LA,Aus,Sea->ewma + H,D +ewma":            dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W,
+                                                                               "Houston": DE, "Dallas": DE})),
+        "LA,Aus,Sea->ewma + Chicago dis only":     dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W,
+                                                                               "Chicago": R})),
+        "LA,Aus,Sea->ewma + Miami +ewma":          dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W,
+                                                                               "Miami": E})),
+        "LA,Aus,Sea->ewma + Mia+ewma + H,D+ewma":  dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W, "Seattle": W,
+                                                                               "Miami": E, "Houston": DE, "Dallas": DE})),
+        "drop LA agree only (safest single)":      dict(modes=dict(C.MODES, **{"Los Angeles": W})),
+        "drop LA+Austin agree only":               dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W})),
+        "drop LA+Austin, Sea->ewma, Mia->ewma":    dict(modes=dict(C.MODES, **{"Los Angeles": W, "Austin": W,
+                                                                               "Seattle": W, "Miami": W})),
+        "everything: dis legs + Mia/Chi agree":    dict(modes={c: (B if c in ("Miami","Chicago") else DE) for c in C.CITIES}),
+    })(),
     # batch 13: combine the two independent levers found in b12 -- add the untraded disagree nights in Seattle and
     # Miami (+P&L), and drop the weak agree leg in LA and Austin (+ROI). Different cities, different legs.
     "b13": (lambda E={"agree","ewma"}, R={"agree","ridge"}, B={"agree","ewma","ridge"},
