@@ -91,14 +91,22 @@ def prices_for(city, d):
 class Models:
     def __init__(self, hist, gain_floor=0.0, gain_window=None, sd_window=60, floor_cities=None,
                  ridge_window=None, ridge_halflife=None, ridge_alpha=None, seasonal=False,
-                 per_city=False, ridge_bias_gain=None):
+                 per_city=False, ridge_bias_gain=None, ewma_window=None, ewma_gain=None, flat_window=None):
         self.hist = hist.dropna(subset=["err"]).copy(); self.cities = sorted(self.hist.city.unique())
         self.seasonal = seasonal; self.per_city = per_city
         self.ewma = {}; self.ewma_sd = {}; self.ridge_sd = {}
         for c in self.cities:
             fl = gain_floor if (floor_cities is None or c in floor_cities) else 0.0   # per-city floor
-            gains = [k for k in C.EWMA_GAINS if k >= fl] or [max(C.EWMA_GAINS)]
-            e = self.hist[self.hist.city == c].sort_values("mday").err.values
+            gains = [ewma_gain] if ewma_gain else ([k for k in C.EWMA_GAINS if k >= fl] or [max(C.EWMA_GAINS)])
+            ce = self.hist[self.hist.city == c].sort_values("mday")
+            if ewma_window:                                                   # only the last N days of error history
+                ce = ce[ce.mday > ce.mday.max() - dt.timedelta(days=ewma_window)]
+            e = ce.err.values
+            if len(e) == 0: self.ewma[c] = (gains[0], 0.0); self.ewma_sd[c] = 1.0; continue
+            if flat_window:                                                   # equal weight inside a window, no decay
+                se = [x - (np.mean(e[max(0, i - flat_window):i]) if i else 0.0) for i, x in enumerate(e)]
+                b = float(np.mean(e[-flat_window:]))
+                self.ewma[c] = (0.0, b); self.ewma_sd[c] = max(float(np.std(se[-sd_window:])), 1.0); continue
             best = None
             for k in gains:
                 b = 0.0; se = []
@@ -363,7 +371,42 @@ def weight_study():
     print("\ntop 5 by P&L:"); print(top[["n", "win", "pnl", "roi", "pnl_aug", "pnl_bad", "ridge_mae", "ess"]].round(3).to_string())
 
 
+def ewma_study():
+    """The EWMA side, mirroring what was done to the ridge.
+      A  ewma_window  how many days of error history the recursion and the gain selection see at all
+      B  ewma_gain    forced gain for every city -- literally "how much more do recent days count":
+                      the newest error gets weight k, and the level's half-life is ln(.5)/ln(1-k) days
+      C  flat_window  the ridge's winning shape applied here: equal weight inside a hard window, no decay
+    Live behaviour = unlimited history, gain chosen per city by SSE (0.05 for LA and Miami, 0.10 elsewhere)."""
+    hl = lambda k: np.log(0.5) / np.log(1 - k)
+    rows = {}
+    def add(name, **mk):
+        F = forecasts(**mk); T = run(F); r = summ(T)
+        r["ewma_bias"] = F.res_e.mean(); r["ewma_mae"] = F.res_e.abs().mean(); rows[name] = r
+    add("baseline: all history, gain chosen per city")
+    print("A: ewma_window...", flush=True)
+    for w in (45, 60, 90, 120, 180, 365): add(f"ewma_window {w}d", ewma_window=w)
+    print("B: forced gain...", flush=True)
+    for k in (0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50): add(f"gain {k:.2f} (half-life {hl(k):.0f}d)", ewma_gain=k)
+    print("C: flat window...", flush=True)
+    for w in (5, 10, 14, 21, 30, 60): add(f"flat mean of last {w} errors", flat_window=w)
+    print("D: cross...", flush=True)
+    for w, k in ((90, 0.05), (90, 0.10), (180, 0.05), (180, 0.10), (180, 0.20)):
+        add(f"window {w}d + gain {k:.2f}", ewma_window=w, ewma_gain=k)
+    R = pd.DataFrame(rows).T
+    R.columns = ["n", "win", "pnl", "roi", f"n>={MID}", "pnl_aug", "roi_aug", f"n>={RECENT}", "win_bad", "pnl_bad",
+                 "ewma_bias", "ewma_mae"]
+    print(f"\n=== EWMA history length and recency weight ({START}..{END}) ===")
+    print(R.round(3).to_string())
+    print(f"\nbaseline ${R.iloc[0]['pnl']:.0f}; bootstrap sd ~$556, so ~+$912 is needed to clear noise.")
+    print("\ntop 5 by P&L:")
+    print(R.sort_values("pnl", ascending=False).head(5)[["n", "win", "pnl", "roi", "pnl_aug", "pnl_bad", "ewma_mae"]].round(3).to_string())
+    R.to_parquet("out/ewma_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("EWMA_ONLY") == "1":
+        ewma_study(); raise SystemExit
     if os.environ.get("WEIGHT_ONLY") == "1":
         weight_study(); raise SystemExit
     if os.environ.get("DRIFT_ONLY") == "1":
