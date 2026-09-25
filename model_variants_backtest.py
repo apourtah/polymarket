@@ -609,7 +609,51 @@ def fusion_study():
     R.to_parquet("out/fusion_study.parquet")
 
 
+def grid_study():
+    """Does the seasonal prior earn its keep at SHORTER ridge windows?
+
+    The shorter the fit window, the less of the annual cycle the ridge has ever seen, so the more blind it should
+    be to a turn and the more an external month-of-year profile should add. A long window sees full cycles and
+    should need it least. This crosses the window length with the prior, scored out of sample (Jul 1 - Sep 22),
+    and reports the GAIN from adding the prior at each length -- that interaction is the whole question."""
+    SEL = dt.date(2026, 6, 30)
+    pri = seasonal_prior(exclude_year=2026)
+    WINS = [None, 90, 120, 150, 180, 210, 240, 365]
+    rows = {}
+    def cell(w, mode):
+        mk = {} if w is None else dict(ridge_window=w)
+        if mode: mk = dict(mk, prior=pri, prior_mode=mode)
+        F = forecasts(**mk); T = run(F); t = T[T.mday > SEL]; f = F[F.mday > SEL]
+        print(f"  window {w} / prior {mode}", flush=True)
+        return dict(n=len(t), pnl=t.pnl.sum(), roi=t.pnl.sum() / t.stake.sum(), win=t.won.mean(),
+                    mae=f.res_r.abs().mean(), bias=f.res_r.mean(),
+                    sep_bias=f[pd.to_datetime(f.mday).dt.month == 9].res_r.mean())
+    base, feat = {}, {}
+    for w in WINS:
+        base[w] = cell(w, None); feat[w] = cell(w, "feature")
+    A = pd.DataFrame(base).T; B = pd.DataFrame(feat).T
+    A.index = [f"{w if w else 'all'}d" for w in WINS]; B.index = A.index
+    out = pd.DataFrame({
+        "pnl_no_prior": A.pnl, "pnl_with_prior": B.pnl, "prior_gain": B.pnl - A.pnl,
+        "roi_no_prior": A.roi, "roi_with_prior": B.roi,
+        "mae_no_prior": A.mae, "mae_with_prior": B.mae, "mae_gain": A.mae - B.mae,
+        "sepbias_no_prior": A.sep_bias, "sepbias_with_prior": B.sep_bias})
+    print("\n=== ridge window x seasonal prior, out of sample (Jul 1 - %s) ===" % END)
+    print(out.round(3).to_string())
+    print("\nprior_gain = P&L added by the prior at that window length; mae_gain = ridge |error| removed.")
+    extra = {}
+    for w in (90, 120, 180):
+        extra[f"delta @ {w}d"] = cell(w, "delta")
+    extra["offset_ridge @ 90d"] = cell(90, "offset_ridge")
+    E = pd.DataFrame(extra).T
+    print("\n=== the stronger injections at short windows (where they should stand the best chance) ===")
+    print(E.round(3).to_string())
+    out.to_parquet("out/grid_study.parquet")
+
+
 if __name__ == "__main__":
+    if os.environ.get("GRID_ONLY") == "1":
+        grid_study(); raise SystemExit
     if os.environ.get("FUSION_ONLY") == "1":
         fusion_study(); raise SystemExit
     if os.environ.get("SIMPLE_ONLY") == "1":
