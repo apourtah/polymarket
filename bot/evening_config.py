@@ -96,7 +96,14 @@ SIZE_JITTER = (0.8, 1.2)          # stake multiplier drawn per order
 CHILD_ORDERS = (1, 1)             # split each stake into this many child orders
 CHILD_GAP_MIN = (1, 3)            # minutes between children
 REST_MIN = (2, 6)                 # rest a limit 1 tick under the ask for this long before crossing (was 5-20)
-DEPTH_CAP = 0.30                  # market (cross) leg only: never take more than this share of visible depth at <= ask + 1c; resting limit is full size
+DEPTH_CAP = 1.00                  # market (cross) leg only: share of visible depth at <= ask + 1c we will take;
+                                  # resting limit is full size regardless. 2026-09-26: 0.30 -> 1.00. The 0.30 was a
+                                  # self-imposed footprint limit, not a market constraint, and it was the single
+                                  # largest brake on execution: measured against 81 live books and 10089 exact
+                                  # depth observations recovered from cleared sweep levels, raising it takes the
+                                  # fill rate from 56% to 79% and realistic P&L from $3086 to $4176 -- more than
+                                  # any stake increase. The cost is visibility: at this setting we take the whole
+                                  # visible book at the touch and one cent behind it.
 DECOY_PROB = 0.0                  # small non-strategy buy on the model's 2nd bucket, per city-day
 DECOY_STAKE = (8, 20)
 # several wallets: POLYMARKET_WALLETS = JSON list of {"owner_key":..., "proxy":..., "login":"email"|"metamask"|"eoa"}
