@@ -97,18 +97,20 @@ CHILD_ORDERS = (1, 1)             # split each stake into this many child orders
 CHILD_GAP_MIN = (1, 3)            # minutes between children
 REST_MIN = (2, 6)                 # legacy; the staged plan below supersedes it
 # --- execution plan (2026-09-26) -------------------------------------------------------------------------
-# Each stage takes a slice of what is still unbought as a marketable (taker) order and rests the remainder as a
-# maker bid one tick under the ask. If the rest has not filled when the stage times out, the resting order is
-# cancelled, the book is re-read, and the next stage runs at the NEW price -- but only while the ask is still
-# inside that leg's buy band; if the market has left the band we stop and keep whatever was acquired.
-#   (taker fraction of the remainder, minutes to rest the rest)
-EXEC_PLAN = [(0.50, 20), (0.50, 20), (1.00, 0)]   # -> 50% now, then 25%+25%, then the last 25%
+# A repeating cycle rather than a fixed ladder. Each pass takes whatever is offered at the best ask and rests
+# the rest as a maker bid one tick above the best bid; if that has not filled when the cycle times out, it is
+# cancelled, the book is re-read, and the cycle runs again at the NEW prices -- but only while the ask is still
+# inside that leg's buy band. Whatever has been acquired is kept; the remainder is abandoned at the timeout.
+# The first pass is delayed by the existing 0-3 min jitter on place_at.
+EXEC_CYCLE_MIN = (6, 9)           # minutes a resting bid waits before it is cancelled and the cycle repeats
+EXEC_TIMEOUT_MIN = 25             # stop working the remainder this long after the first pass
+MAKER_TICKS = 1                   # rest this many cents ABOVE the best bid: 1 = bid+1c, price-improving and at
+                                  # the front of the queue, while still passive. Quoting relative to the bid
+                                  # rather than the ask keeps it passive when the spread is wider than 2c.
 CROSS_TICKS = 0                   # how far past the best ask a crossing (taker) order may reach, in cents.
                                   # 0 = take the best price in the book only, for whatever volume is offered
-                                  # there, and never walk deeper. 1 = allow one cent of walk (the old behaviour).
-                                  # NB a BUY crosses at the ASK; a buy resting at the bid would not cross at all.
-                                  # The maker leg sits at ask-1c, which with the measured 2c spread is one tick
-                                  # ABOVE the best bid -- inside the spread and ahead of the bid queue.
+                                  # there, and never walk deeper. NB a BUY crosses at the ASK; a buy resting at
+                                  # the bid does not cross at all, it queues.
 DEPTH_CAP = 1.00                  # market (cross) leg only: share of visible depth at <= ask + 1c we will take;
                                   # resting limit is full size regardless. 2026-09-26: 0.30 -> 1.00. The 0.30 was a
                                   # self-imposed footprint limit, not a market constraint, and it was the single

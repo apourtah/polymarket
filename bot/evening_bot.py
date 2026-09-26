@@ -239,6 +239,15 @@ class Bot:
                     if b and len(toks) == 2: out[b] = dict(yes_token=toks[0], no_token=toks[1], cid=m["conditionId"], question=m["question"])
                 return out
         return {}
+    def book_top(self, token):
+        """(bids, asks) as sorted (price, size) lists. The resting leg needs the bid side, the crossing leg the ask."""
+        try:
+            ob = self.client.get_order_book(token)
+            bids = sorted(((float(b.price), float(b.size)) for b in ob.bids), key=lambda x: -x[0])
+            asks = sorted(((float(a.price), float(a.size)) for a in ob.asks), key=lambda x: x[0])
+            return bids, asks
+        except Exception as ex: log.warning("book %s: %s", token[:10], ex); return [], []
+
     def best_ask(self, token):
         try:
             ob = self.client.get_order_book(token); asks = sorted(((float(a.price), float(a.size)) for a in ob.asks), key=lambda x: x[0]); return asks
@@ -389,57 +398,59 @@ class Bot:
                 got = float(cl.get_order(r.get("orderID") or r.get("id")).get("size_matched") or 0)
             except Exception as ex: log.error("cross failed: %s", ex); return 0.0
         if got > 0:
-            log.info("CROSS stage %d at %.3f x %.2f sh %s [%s]", o.get("stage", 0), ask, got, o["question"][40:80], "DRY" if C.DRY_RUN else "LIVE")
+            log.info("CROSS cycle %d at %.3f x %.2f sh %s [%s]", o.get("cycle", 0), ask, got, o["question"][40:80], "DRY" if C.DRY_RUN else "LIVE")
             self._fill(st, o, ask, got, final=False)
         return got
 
-    def _start_stage(self, st, o, ask, depth, now):
-        """Run one stage: cross a slice of what is left, rest the remainder, and schedule the next stage."""
+    def _cycle(self, st, o, bids, asks, now):
+        """One pass: take whatever is offered at the best ask, then rest the remainder at bid+MAKER_TICKS.
+        Repeats on a timer until the order is filled, the market leaves the band, or EXEC_TIMEOUT_MIN elapses."""
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
-        plan = getattr(C, "EXEC_PLAN", [(0.5, 20), (0.5, 20), (1.0, 0)])
-        s = o.get("stage", 0)
-        if s >= len(plan): o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
+        import random
+        ct = getattr(C, "CROSS_TICKS", 0) * 0.01
+        ask = asks[0][0]; depth = sum(sz for p_, sz in asks if p_ <= ask + ct + 1e-9)
+        bid = bids[0][0] if bids else round(ask - 0.02, 3)
+        n = o.get("cycle", 0)
+        o.setdefault("deadline", now + getattr(C, "EXEC_TIMEOUT_MIN", 25) * 60)
         lo, hi = self.leg_band(o["why"])
-        if s > 0 and not (lo <= ask <= hi):                                  # the market left our band while resting
-            log.info("stop %s (%s): ask %.3f outside %.2f-%.2f, keeping $%.2f of $%.2f", o["question"][40:80], o["why"], ask, lo, hi, o.get("acquired", 0.0), o["usd"])
-            o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
-        frac, rest_min = plan[s]
+        if n > 0 and not (lo <= ask <= hi):
+            log.info("stop %s (%s): ask %.3f outside %.2f-%.2f, keeping $%.2f of $%.2f", o["question"][40:80], o["why"], ask, lo, hi, o.get("acquired", 0.0), o["usd"]); o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
+        if n > 0 and now >= o["deadline"]:
+            log.info("timeout %s (%s) after %d min: keeping $%.2f of $%.2f", o["question"][40:80], o["why"], getattr(C, "EXEC_TIMEOUT_MIN", 25), o.get("acquired", 0.0), o["usd"]); o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
         rem = o.get("remaining_usd", o["usd"])
         if rem < C.MIN_ORDER_SHARES * ask: o["status"] = "filled" if o.get("acquired", 0) else "abandoned"; return
         if not self.ensure_cash(o["wallet"], rem):
             log.warning("skip %s: wallet #%d short of cash even after redeeming", o["question"][40:80], o["wallet"]); o["status"] = "abandoned"; return
-        take_usd = rem if s == len(plan) - 1 else rem * frac
-        got = self._cross(st, o, ask, depth, take_usd)
-        o["remaining_usd"] = max(0.0, rem - got * ask)
-        o["stage"] = s + 1
+        got = self._cross(st, o, ask, depth, rem)                            # take the best offer, whatever size it holds
+        o["remaining_usd"] = max(0.0, rem - got * ask); o["cycle"] = n + 1
         rest_usd = o["remaining_usd"]
-        if rest_usd < C.MIN_ORDER_SHARES * ask or rest_min <= 0:
-            o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
-        shares = round(rest_usd / ask, 2)                                    # resting leg: full size, no depth cap
-        o["price"] = round(ask - 0.01, 3); o["shares"] = shares; o["rest_until"] = now + rest_min * 60
+        if rest_usd < C.MIN_ORDER_SHARES * ask: o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
+        price = round(bid + getattr(C, "MAKER_TICKS", 1) * 0.01, 3)          # one tick above the best bid
+        if price >= ask: price = round(ask - 0.01, 3)                        # never cross with the resting leg
+        shares = round(rest_usd / price, 2)
+        o["price"] = price; o["shares"] = shares
+        o["rest_until"] = min(now + random.uniform(*getattr(C, "EXEC_CYCLE_MIN", (6, 9))) * 60, o["deadline"])
         if not C.DRY_RUN:
             try:
                 cl = self.wallet_client(o["wallet"]); opts = PartialCreateOrderOptions(tick_size=cl.get_tick_size(o["token"]), neg_risk=cl.get_neg_risk(o["token"]))
-                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=o["price"], size=shares, side="BUY"), opts), OrderType.GTC); o["order_id"] = r.get("orderID") or r.get("id")
+                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=price, size=shares, side="BUY"), opts), OrderType.GTC); o["order_id"] = r.get("orderID") or r.get("id")
             except Exception as ex: log.error("rest order failed: %s", ex); o["status"] = "abandoned"; return
         o["status"] = "resting"
-        log.info("REST stage %d bid %.3f x %.2f sh %s (%s) for %d min [wallet #%d, %s]", s, o["price"], shares, o["question"][40:80], o["why"], rest_min, o["wallet"], "DRY" if C.DRY_RUN else "LIVE")
+        log.info("REST cycle %d bid %.3f (best bid %.3f, ask %.3f) x %.2f sh %s (%s) [wallet #%d, %s]", n, price, bid, ask, shares, o["question"][40:80], o["why"], o["wallet"], "DRY" if C.DRY_RUN else "LIVE")
 
     def manage_orders(self):
         now = time.time(); self.expire_stale()
         for key, st in self.state["done"].items():
             for o in st.get("queue", []):
                 if o["status"] in ("filled", "cancelled", "abandoned", "expired"): continue
-                asks = self.best_ask(o["token"])
+                bids, asks = self.book_top(o["token"])
                 if not asks: continue
-                ct = getattr(C, "CROSS_TICKS", 0) * 0.01
-                ask, depth = asks[0][0], sum(sz for p_, sz in asks if p_ <= asks[0][0] + ct + 1e-9)
                 if o["status"] == "queued" and now >= o["place_at"]:
-                    o.setdefault("remaining_usd", o["usd"]); o.setdefault("acquired", 0.0); o.setdefault("stage", 0)
-                    self._start_stage(st, o, ask, depth, now)
+                    o.setdefault("remaining_usd", o["usd"]); o.setdefault("acquired", 0.0); o.setdefault("cycle", 0)
+                    self._cycle(st, o, bids, asks, now)
                 elif o["status"] == "resting":
                     filled = 0.0
-                    if C.DRY_RUN: filled = o["shares"] if ask <= o["price"] else 0.0          # paper: filled if the ask came down to our bid
+                    if C.DRY_RUN: filled = o["shares"] if asks[0][0] <= o["price"] else 0.0   # paper: filled if the ask came down to our bid
                     else:
                         try: filled = float(self.wallet_client(o["wallet"]).get_order(o["order_id"]).get("size_matched") or 0)
                         except Exception: pass
@@ -452,7 +463,7 @@ class Bot:
                         if filled > 0:
                             self._fill(st, o, o["price"], filled, final=False)
                             o["remaining_usd"] = max(0.0, o.get("remaining_usd", o["usd"]) - filled * o["price"])
-                        self._start_stage(st, o, ask, depth, now)           # next stage, re-priced off the new book
+                        self._cycle(st, o, bids, asks, now)                  # next pass, re-priced off the new book
             self.save()
 
     def _fill(self, st, o, price, shares, final=True):
