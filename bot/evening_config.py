@@ -95,7 +95,14 @@ SKIP_PROB = 0.0                   # skip a city-day entirely with this probabili
 SIZE_JITTER = (0.8, 1.2)          # stake multiplier drawn per order
 CHILD_ORDERS = (1, 1)             # split each stake into this many child orders
 CHILD_GAP_MIN = (1, 3)            # minutes between children
-REST_MIN = (2, 6)                 # rest a limit 1 tick under the ask for this long before crossing (was 5-20)
+REST_MIN = (2, 6)                 # legacy; the staged plan below supersedes it
+# --- execution plan (2026-09-26) -------------------------------------------------------------------------
+# Each stage takes a slice of what is still unbought as a marketable (taker) order and rests the remainder as a
+# maker bid one tick under the ask. If the rest has not filled when the stage times out, the resting order is
+# cancelled, the book is re-read, and the next stage runs at the NEW price -- but only while the ask is still
+# inside that leg's buy band; if the market has left the band we stop and keep whatever was acquired.
+#   (taker fraction of the remainder, minutes to rest the rest)
+EXEC_PLAN = [(0.50, 20), (0.50, 20), (1.00, 0)]   # -> 50% now, then 25%+25%, then the last 25%
 DEPTH_CAP = 1.00                  # market (cross) leg only: share of visible depth at <= ask + 1c we will take;
                                   # resting limit is full size regardless. 2026-09-26: 0.30 -> 1.00. The 0.30 was a
                                   # self-imposed footprint limit, not a market constraint, and it was the single

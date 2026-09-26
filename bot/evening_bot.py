@@ -360,8 +360,70 @@ class Bot:
                 o["status"] = "expired"; log.info("expired stale %s order: %s (%s)", o["why"], o["question"][40:80], key)
         self.save()
 
-    def manage_orders(self):
+    def leg_band(self, why):
+        """The price band a leg is allowed to buy in. Re-checked before every staged top-up: if the market has
+        left the band while we were resting, we keep what we have and stop rather than chase it."""
+        if why == "agree": return (C.AGREE_MIN_PRICE, C.AGREE_MAX_PRICE)
+        if why in ("dis_ridge", "dis_ewma"): return (C.MODEL_MIN_PRICE, C.MODEL_MAX_PRICE)
+        if why == "disagree": return (0.0, C.DISAGREE_MAX_PRICE)
+        if why.startswith("no_"): return (1 - C.NO_LEG_MAX_YES, 1 - C.NO_LEG_MIN_YES + 0.03)
+        return (0.0, 1.0)                                                    # decoys are unconstrained
+
+    def _cross(self, st, o, ask, depth, usd):
+        """Marketable buy for `usd` at ask+1c, limited to DEPTH_CAP of what is visible at <= ask+1c."""
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        want = round(usd / ask, 2)
+        take = round(min(want, C.DEPTH_CAP * depth), 2)
+        if take < C.MIN_ORDER_SHARES:
+            log.info("no cross %s: wanted %.1f sh, only %.1f sh at <= %.3f", o["question"][40:80], want, depth, ask + 0.01)
+            return 0.0
+        if take < want - 0.01:
+            log.info("cross capped %s: %.2f of %.2f sh (%.0f%% of %.1f sh depth)", o["question"][40:80], take, want, C.DEPTH_CAP * 100, depth)
+        got = take
+        if not C.DRY_RUN:
+            try:
+                cl = self.wallet_client(o["wallet"]); opts = PartialCreateOrderOptions(tick_size=cl.get_tick_size(o["token"]), neg_risk=cl.get_neg_risk(o["token"]))
+                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=round(ask + 0.01, 3), size=take, side="BUY"), opts), OrderType.FAK); time.sleep(0.5)
+                got = float(cl.get_order(r.get("orderID") or r.get("id")).get("size_matched") or 0)
+            except Exception as ex: log.error("cross failed: %s", ex); return 0.0
+        if got > 0:
+            log.info("CROSS stage %d at %.3f x %.2f sh %s [%s]", o.get("stage", 0), ask, got, o["question"][40:80], "DRY" if C.DRY_RUN else "LIVE")
+            self._fill(st, o, ask, got, final=False)
+        return got
+
+    def _start_stage(self, st, o, ask, depth, now):
+        """Run one stage: cross a slice of what is left, rest the remainder, and schedule the next stage."""
+        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        plan = getattr(C, "EXEC_PLAN", [(0.5, 20), (0.5, 20), (1.0, 0)])
+        s = o.get("stage", 0)
+        if s >= len(plan): o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
+        lo, hi = self.leg_band(o["why"])
+        if s > 0 and not (lo <= ask <= hi):                                  # the market left our band while resting
+            log.info("stop %s (%s): ask %.3f outside %.2f-%.2f, keeping $%.2f of $%.2f", o["question"][40:80], o["why"], ask, lo, hi, o.get("acquired", 0.0), o["usd"])
+            o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
+        frac, rest_min = plan[s]
+        rem = o.get("remaining_usd", o["usd"])
+        if rem < C.MIN_ORDER_SHARES * ask: o["status"] = "filled" if o.get("acquired", 0) else "abandoned"; return
+        if not self.ensure_cash(o["wallet"], rem):
+            log.warning("skip %s: wallet #%d short of cash even after redeeming", o["question"][40:80], o["wallet"]); o["status"] = "abandoned"; return
+        take_usd = rem if s == len(plan) - 1 else rem * frac
+        got = self._cross(st, o, ask, depth, take_usd)
+        o["remaining_usd"] = max(0.0, rem - got * ask)
+        o["stage"] = s + 1
+        rest_usd = o["remaining_usd"]
+        if rest_usd < C.MIN_ORDER_SHARES * ask or rest_min <= 0:
+            o["status"] = "filled" if o.get("acquired", 0) else "cancelled"; return
+        shares = round(rest_usd / ask, 2)                                    # resting leg: full size, no depth cap
+        o["price"] = round(ask - 0.01, 3); o["shares"] = shares; o["rest_until"] = now + rest_min * 60
+        if not C.DRY_RUN:
+            try:
+                cl = self.wallet_client(o["wallet"]); opts = PartialCreateOrderOptions(tick_size=cl.get_tick_size(o["token"]), neg_risk=cl.get_neg_risk(o["token"]))
+                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=o["price"], size=shares, side="BUY"), opts), OrderType.GTC); o["order_id"] = r.get("orderID") or r.get("id")
+            except Exception as ex: log.error("rest order failed: %s", ex); o["status"] = "abandoned"; return
+        o["status"] = "resting"
+        log.info("REST stage %d bid %.3f x %.2f sh %s (%s) for %d min [wallet #%d, %s]", s, o["price"], shares, o["question"][40:80], o["why"], rest_min, o["wallet"], "DRY" if C.DRY_RUN else "LIVE")
+
+    def manage_orders(self):
         now = time.time(); self.expire_stale()
         for key, st in self.state["done"].items():
             for o in st.get("queue", []):
@@ -370,45 +432,29 @@ class Bot:
                 if not asks: continue
                 ask, depth = asks[0][0], sum(sz for p_, sz in asks if p_ <= asks[0][0] + 0.01)
                 if o["status"] == "queued" and now >= o["place_at"]:
-                    if not self.ensure_cash(o["wallet"], o["usd"]): log.warning("skip %s: wallet #%d short of cash even after redeeming", o["question"][40:80], o["wallet"]); o["status"] = "abandoned"; continue
-                    shares = round(o["usd"] / ask, 2)                                          # resting limit: full child size, no depth cap
-                    if shares < C.MIN_ORDER_SHARES: o["status"] = "abandoned"; log.info("abandon %s: below min order", o["question"][40:80]); continue
-                    o["price"] = round(ask - 0.01, 3); o["shares"] = shares; o["rest_until"] = now + o["rest_min"] * 60
-                    if not C.DRY_RUN:
-                        try:
-                            cl = self.wallet_client(o["wallet"]); opts = PartialCreateOrderOptions(tick_size=cl.get_tick_size(o["token"]), neg_risk=cl.get_neg_risk(o["token"]))
-                            r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=o["price"], size=shares, side="BUY"), opts), OrderType.GTC); o["order_id"] = r.get("orderID") or r.get("id")
-                        except Exception as ex: log.error("rest order failed: %s", ex); o["status"] = "abandoned"; continue
-                    o["status"] = "resting"; log.info("REST bid %.3f x %.2f sh %s (%s) for %.0f min [wallet #%d, %s]", o["price"], shares, o["question"][40:80], o["why"], o["rest_min"], o["wallet"], "DRY" if C.DRY_RUN else "LIVE")
+                    o.setdefault("remaining_usd", o["usd"]); o.setdefault("acquired", 0.0); o.setdefault("stage", 0)
+                    self._start_stage(st, o, ask, depth, now)
                 elif o["status"] == "resting":
                     filled = 0.0
                     if C.DRY_RUN: filled = o["shares"] if ask <= o["price"] else 0.0          # paper: filled if the ask came down to our bid
                     else:
                         try: filled = float(self.wallet_client(o["wallet"]).get_order(o["order_id"]).get("size_matched") or 0)
                         except Exception: pass
-                    if filled >= o["shares"] * 0.999: self._fill(st, o, o["price"], o["shares"]); continue
+                    if filled >= o["shares"] * 0.999:
+                        self._fill(st, o, o["price"], o["shares"]); o["remaining_usd"] = 0.0; continue
                     if now >= o["rest_until"]:
                         if not C.DRY_RUN:
                             try: self.wallet_client(o["wallet"]).cancel(o["order_id"])
                             except Exception as ex: log.warning("cancel: %s", ex)
-                        if filled > 0: self._fill(st, o, o["price"], filled, final=False)
-                        remaining = round(min(o["shares"] - filled, C.DEPTH_CAP * depth), 2)          # cross leg: depth cap per child order
-                        if remaining < C.MIN_ORDER_SHARES: o["status"] = "filled" if filled else "cancelled"; log.info("no cross %s: %.1f sh unfilled, only %.1f sh at <= %.3f", o["question"][40:80], o["shares"] - filled, depth, ask + 0.01); continue
-                        if remaining < o["shares"] - filled - 0.01: log.info("cross capped %s: %.2f of %.2f sh (%.0f%% of %.1f sh depth)", o["question"][40:80], remaining, o["shares"] - filled, C.DEPTH_CAP * 100, depth)
-                        got = remaining
-                        if not C.DRY_RUN:
-                            try:
-                                cl = self.wallet_client(o["wallet"]); opts = PartialCreateOrderOptions(tick_size=cl.get_tick_size(o["token"]), neg_risk=cl.get_neg_risk(o["token"]))
-                                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=round(ask + 0.01, 3), size=remaining, side="BUY"), opts), OrderType.FAK); time.sleep(0.5)
-                                got = float(cl.get_order(r.get("orderID") or r.get("id")).get("size_matched") or 0)
-                            except Exception as ex: log.error("cross failed: %s", ex); got = 0.0
-                        log.info("CROSS at %.3f x %.2f sh %s [%s]", ask, remaining, o["question"][40:80], "DRY" if C.DRY_RUN else "LIVE")
-                        if got > 0: self._fill(st, o, ask, got)
-                        else: o["status"] = "cancelled"
+                        if filled > 0:
+                            self._fill(st, o, o["price"], filled, final=False)
+                            o["remaining_usd"] = max(0.0, o.get("remaining_usd", o["usd"]) - filled * o["price"])
+                        self._start_stage(st, o, ask, depth, now)           # next stage, re-priced off the new book
             self.save()
 
     def _fill(self, st, o, price, shares, final=True):
         usd = price * shares; p = self.state["positions"].setdefault(o["cid"], {"question": o["question"], "shares": 0.0, "usd": 0.0}); p["shares"] += shares; p["usd"] += usd
+        o["acquired"] = o.get("acquired", 0.0) + usd                         # staged plan: how much of this child is bought
         st["usd"] += usd; self.state["daily"][dt.date.today().isoformat()] = self.daily_usd() + usd
         if final: o["status"] = "filled"
         new = not os.path.exists(C.TRADE_LOG)
