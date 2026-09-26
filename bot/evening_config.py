@@ -28,11 +28,13 @@ DISAGREE_MAX_PRICE = 0.075
 NO_LEG = True
 NO_LEG_MIN_YES = 0.35; NO_LEG_MAX_YES = 0.55   # 0.30-0.35 was a coin-flip on fees (NO at ~69c, 72% win); 0.35-0.55: 76 nights, 84% win, +40%
 NO_LEG_SHARE_MATCH = True         # size the NO leg to the YES leg's share count (the 0xdd22 sizing); else STAKE
-STAKE = 5.5                       # base $ per bucket, before the edge tilt below.
-# 2026-09-26: sized for a $200 wallet at EDGE_MULT 6. A cash-flow bootstrap over alternative orderings of the
-# same trading days (3-day hold from entry to redemption, $2 reserve) puts the chance of running dry at 6.3%
-# with a $7 base stake, 3.1% at $6.00, 2.6% at $5.50 and 0.8% at $5.00. The steeper tilt concentrates more
-# capital into the high-edge trades, so it needs a smaller base than EDGE_MULT 4 did for the same risk.
+STAKE = 8.5                       # base $ per bucket, before the edge tilt below.
+# 2026-09-26: sized for a $200 wallet from a 134-point sweep over (EDGE_MULT, base stake, cap), scored by the
+# P&L actually ACHIEVABLE on that wallet -- a cash-flow bootstrap over reshuffled orderings of the same trading
+# days (3-day hold, $2 reserve) where a trade that cannot be funded simply does not happen. Running out of cash
+# costs a missed opportunity, not a loss, so the frontier keeps climbing with stake size: realised P&L is $2698
+# at a $5.50 base, $3647 at $8.00 and $4154 here, where 2.8% of trades go unfunded. Beyond this the skip rate
+# rises faster than the gain ($10.00 base: 4.6% skipped).
 # 2026-09-26: size by the model's own edge instead of betting a flat stake on everything --
 #   stake = STAKE * (1 + EDGE_MULT * (P_model - ask)), so a bucket the model likes far more than the price gets
 #   up to MAX_PER_MARKET_USD and one it barely likes gets a couple of dollars. Largest single improvement found
@@ -42,9 +44,9 @@ STAKE_MODE = "edge"               # "edge" | "flat"
 EDGE_MULT = 6.0                   # 2026-09-26: 6 -> 4, mid-plateau. The multiplier sweep is monotone and flat
                                   # over 4..6 ($3979 / $4018 / $4024 standalone), so 4 is the same effect with a
                                   # gentler tilt: max stake is reached at edge +0.375 rather than +0.25.
-MAX_PER_MARKET_USD = 14.0         # ~2.5x the base stake, as in the validated config
-MAX_PER_CITY_DAY_USD = 19.0       # YES leg + share-matched NO leg
-MAX_DAILY_USD = 85.0              # peak modelled day is $63, so this does not bind
+MAX_PER_MARKET_USD = 25.0         # ~3x the base stake
+MAX_PER_CITY_DAY_USD = 30.0       # YES leg + share-matched NO leg
+MAX_DAILY_USD = 130.0             # peak modelled day is $95, so this does not bind
 MIN_ORDER_SHARES = 5
 AUTO_REDEEM = True                # if a wallet's free USDC can't fund an order, redeem its resolved winners first (bot/redeem.py; gas = POL from the EOA)
 CASH_RESERVE = 2.0                # keep this much USDC free after funding an order
