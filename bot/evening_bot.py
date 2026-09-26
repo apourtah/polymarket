@@ -319,8 +319,14 @@ class Bot:
                 if asks and asks[0][0] <= 0.5: orders.append((second, asks[0][0], asks, "decoy", Pe[second], Pr[second], mk[second]["yes_token"]))
         t0 = time.time(); yes_stake = None
         for b, ask, asks, why, pe, pr, token in orders:
-            edge = (pe + pr) / 2 - ask
-            stake = random.uniform(*C.DECOY_STAKE) if why == "decoy" else C.STAKE * (2 if (why == "disagree" and edge >= 2 * C.DISAGREE_EDGE) else 1) * random.uniform(*C.SIZE_JITTER)
+            # the edge is measured against the model that actually picked the bucket, as in the backtest
+            pmod = (pe + pr) / 2 if why in ("agree", "disagree") else (pr if why == "dis_ridge" else pe)
+            edge = pmod - ask
+            if why == "decoy": stake = random.uniform(*C.DECOY_STAKE)
+            elif getattr(C, "STAKE_MODE", "flat") == "edge":
+                stake = C.STAKE * max(0.0, 1 + getattr(C, "EDGE_MULT", 0.0) * edge) * random.uniform(*C.SIZE_JITTER)
+            else:
+                stake = C.STAKE * (2 if (why == "disagree" and edge >= 2 * C.DISAGREE_EDGE) else 1) * random.uniform(*C.SIZE_JITTER)
             if why.startswith("no_") and C.NO_LEG_SHARE_MATCH and yes_stake: stake = yes_stake[0] / yes_stake[1] * ask   # same share count as the YES leg
             elif not why.startswith("no_") and why != "decoy": yes_stake = (stake, ask)
             room = min(C.MAX_PER_MARKET_USD - self.state["positions"].get(mk[b]["cid"], {}).get("usd", 0.0), C.MAX_PER_CITY_DAY_USD - st["usd"], C.MAX_DAILY_USD - self.daily_usd())

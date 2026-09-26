@@ -5,8 +5,13 @@ DRY_RUN = os.environ.get("BOT_DRY_RUN", "1") != "0"
 
 # per-city legs (8-month backtest, backtest_evening.py MODES=...): "agree" = buy the agreed bucket on agreement nights;
 # "ridge"/"ewma" = on disagreement nights buy that model's best bucket; "edge" = old avg-P edge rule (unused)
-MODES = {"Los Angeles": {"agree", "ewma"}, "Austin": {"agree", "ewma"}, "Chicago": {"agree", "ridge"},
-         "Houston": {"ridge"}, "Dallas": {"ridge"}, "Seattle": {"agree"}, "Miami": {"agree"}}
+#   2026-09-26: the agree leg is dropped in Los Angeles, Austin and Seattle. Over Jan-Sep it returned 0.047 /
+#   0.086 / 0.163 there against 0.49-1.06 for the disagree legs elsewhere, and at the ask (which is what we pay,
+#   unlike the backtest's mid) LA/agree goes negative. Paired bootstrap P=99.9%, stable at every expanding-window
+#   cutoff, wins all three folds (leg_audit.py). Seattle keeps an empty leg set rather than being removed, so its
+#   forecast is still recorded and scored into the history -- it simply never trades.
+MODES = {"Los Angeles": {"ewma"}, "Austin": {"ewma"}, "Chicago": {"agree", "ridge"},
+         "Houston": {"ridge"}, "Dallas": {"ridge"}, "Seattle": set(), "Miami": {"agree"}}
 CITIES = list(MODES)              # NYC/Denver/SF/Atlanta excluded (no edge in either leg)
 MODEL_MAX_PRICE = 0.45            # ridge/ewma disagreement buys: YES ask <= this. 2026-09-19: 0.60 -> 0.45 (45-60c picks net $0 on $2.4k; 45-50c -13%)
 MODEL_MIN_PRICE = 0.05
@@ -23,10 +28,17 @@ DISAGREE_MAX_PRICE = 0.075
 NO_LEG = True
 NO_LEG_MIN_YES = 0.35; NO_LEG_MAX_YES = 0.55   # 0.30-0.35 was a coin-flip on fees (NO at ~69c, 72% win); 0.35-0.55: 76 nights, 84% win, +40%
 NO_LEG_SHARE_MATCH = True         # size the NO leg to the YES leg's share count (the 0xdd22 sizing); else STAKE
-STAKE = 10.0                      # $ per bucket ("edge" mode: doubled when edge >= 2x DISAGREE_EDGE)
-MAX_PER_MARKET_USD = 20.0
+STAKE = 10.0                      # base $ per bucket, before the edge tilt below
+# 2026-09-26: size by the model's own edge instead of betting a flat stake on everything --
+#   stake = STAKE * (1 + EDGE_MULT * (P_model - ask)), so a bucket the model likes far more than the price gets
+#   up to MAX_PER_MARKET_USD and one it barely likes gets a couple of dollars. Largest single improvement found
+#   (search.py b16/b17) and not a tuned constant: the response is monotone over every multiplier 1..8 and every
+#   cap $15..$30, all of which beat the flat stake on both P&L and ROI across all three folds.
+STAKE_MODE = "edge"               # "edge" | "flat"
+EDGE_MULT = 6.0
+MAX_PER_MARKET_USD = 25.0         # 20 -> 25: the validated cap; below this the tilt is clipped before it acts
 MAX_PER_CITY_DAY_USD = 35.0       # YES leg + share-matched NO leg
-MAX_DAILY_USD = 120.0
+MAX_DAILY_USD = 150.0             # 120 -> 150: the backtested config peaks at $111/day and would clip at 120
 MIN_ORDER_SHARES = 5
 AUTO_REDEEM = True                # if a wallet's free USDC can't fund an order, redeem its resolved winners first (bot/redeem.py; gas = POL from the EOA)
 CASH_RESERVE = 2.0                # keep this much USDC free after funding an order
