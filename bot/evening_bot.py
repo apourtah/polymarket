@@ -372,10 +372,12 @@ class Bot:
     def _cross(self, st, o, ask, depth, usd):
         """Marketable buy for `usd` at ask+1c, limited to DEPTH_CAP of what is visible at <= ask+1c."""
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        ct = getattr(C, "CROSS_TICKS", 0) * 0.01
+        limit = round(ask + ct, 3)                                           # CROSS_TICKS 0 -> the touch, nothing deeper
         want = round(usd / ask, 2)
         take = round(min(want, C.DEPTH_CAP * depth), 2)
         if take < C.MIN_ORDER_SHARES:
-            log.info("no cross %s: wanted %.1f sh, only %.1f sh at <= %.3f", o["question"][40:80], want, depth, ask + 0.01)
+            log.info("no cross %s: wanted %.1f sh, only %.1f sh at <= %.3f", o["question"][40:80], want, depth, limit)
             return 0.0
         if take < want - 0.01:
             log.info("cross capped %s: %.2f of %.2f sh (%.0f%% of %.1f sh depth)", o["question"][40:80], take, want, C.DEPTH_CAP * 100, depth)
@@ -383,7 +385,7 @@ class Bot:
         if not C.DRY_RUN:
             try:
                 cl = self.wallet_client(o["wallet"]); opts = PartialCreateOrderOptions(tick_size=cl.get_tick_size(o["token"]), neg_risk=cl.get_neg_risk(o["token"]))
-                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=round(ask + 0.01, 3), size=take, side="BUY"), opts), OrderType.FAK); time.sleep(0.5)
+                r = cl.post_order(cl.create_order(OrderArgs(token_id=o["token"], price=limit, size=take, side="BUY"), opts), OrderType.FAK); time.sleep(0.5)
                 got = float(cl.get_order(r.get("orderID") or r.get("id")).get("size_matched") or 0)
             except Exception as ex: log.error("cross failed: %s", ex); return 0.0
         if got > 0:
@@ -430,7 +432,8 @@ class Bot:
                 if o["status"] in ("filled", "cancelled", "abandoned", "expired"): continue
                 asks = self.best_ask(o["token"])
                 if not asks: continue
-                ask, depth = asks[0][0], sum(sz for p_, sz in asks if p_ <= asks[0][0] + 0.01)
+                ct = getattr(C, "CROSS_TICKS", 0) * 0.01
+                ask, depth = asks[0][0], sum(sz for p_, sz in asks if p_ <= asks[0][0] + ct + 1e-9)
                 if o["status"] == "queued" and now >= o["place_at"]:
                     o.setdefault("remaining_usd", o["usd"]); o.setdefault("acquired", 0.0); o.setdefault("stage", 0)
                     self._start_stage(st, o, ask, depth, now)

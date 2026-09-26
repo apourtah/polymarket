@@ -103,6 +103,12 @@ REST_MIN = (2, 6)                 # legacy; the staged plan below supersedes it
 # inside that leg's buy band; if the market has left the band we stop and keep whatever was acquired.
 #   (taker fraction of the remainder, minutes to rest the rest)
 EXEC_PLAN = [(0.50, 20), (0.50, 20), (1.00, 0)]   # -> 50% now, then 25%+25%, then the last 25%
+CROSS_TICKS = 0                   # how far past the best ask a crossing (taker) order may reach, in cents.
+                                  # 0 = take the best price in the book only, for whatever volume is offered
+                                  # there, and never walk deeper. 1 = allow one cent of walk (the old behaviour).
+                                  # NB a BUY crosses at the ASK; a buy resting at the bid would not cross at all.
+                                  # The maker leg sits at ask-1c, which with the measured 2c spread is one tick
+                                  # ABOVE the best bid -- inside the spread and ahead of the bid queue.
 DEPTH_CAP = 1.00                  # market (cross) leg only: share of visible depth at <= ask + 1c we will take;
                                   # resting limit is full size regardless. 2026-09-26: 0.30 -> 1.00. The 0.30 was a
                                   # self-imposed footprint limit, not a market constraint, and it was the single
