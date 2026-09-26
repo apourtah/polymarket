@@ -146,7 +146,8 @@ def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg
          sd_pick=None, sd_pick_dis=None, min_p=None, min_edge=None, agree_band=None,
          dis_edge=None, dis_min_p=None, model_band=None, modes=None,
          stake_mode="flat", kelly_frac=0.5, edge_mult=4.0, stake_cap=None,
-         no_leg=False, no_band=(0.35, 0.55), P=None):
+         no_leg=False, no_band=(0.35, 0.55), no_mode="fav", no_trigger="dis", no_size="share",
+         no_edge=0.10, no_warmer_only=True, P=None):
     """The trading rule, with the agreement STRUCTURE opened up.
 
     Live: buy when the two models' argmax bucket is identical ("agree"), else follow the configured model.
@@ -228,22 +229,50 @@ def run2(F, agree_tol=None, third=None, blend=None, sd_spread=0.0, blend_sd="avg
             trades.append(dict(city=r.city, mday=r.mday, why=why, price=ask, stake=stake, won=won,
                                pnl=(sh - stake if won else -stake) - fee))
             yes_leg = (b, ask, sh, why)
-        # NO leg (production rule H, never modelled in this harness): alongside a disagree YES leg, sell the
-        # market favourite when it is WARMER than our bucket. NO price = 1 - YES; the NO wins if that bucket loses.
-        if no_leg and "yes_leg" in dir() and yes_leg and yes_leg[3] in ("dis_ridge", "dis_ewma"):
-            fav = max(bk, key=lambda x: pr[x][0])
-            if fav[0] > yes_leg[0][0] and no_band[0] <= pr[fav][0] <= no_band[1]:
-                nask = 1 - pr[fav][0]; nwon = not pr[fav][1]
-                nstake = min(yes_leg[2] * nask, C.MAX_PER_CITY_DAY_USD - spent)
-                if nstake >= C.MIN_ORDER_SHARES * nask:
-                    nsh = nstake / nask; nfee = 0.05 * nask * (1 - nask) * nsh
-                    trades.append(dict(city=r.city, mday=r.mday, why="no_fav", price=nask, stake=nstake, won=nwon,
-                                       pnl=(nsh - nstake if nwon else -nstake) - nfee))
+        # ---- NO leg. Production rule H is: alongside a DISAGREE yes leg, sell the market favourite when it is
+        # warmer than our bucket (variant A) or, in ridge cities, the bucket 2F warmer than the ridge pick
+        # (variant B), in both cases only when that bucket's YES sits in [0.35, 0.55], sized to the YES leg's
+        # shares. Everything about that is swept here: which bucket to sell, when we are allowed to sell, the
+        # price band, and the sizing. "overpriced" generalises it -- sell ANY bucket the market prices above the
+        # model's probability by no_edge, which is the mirror of the min_edge filter on the YES side.
+        if no_leg:
+            yb = yes_leg[0] if yes_leg else None
+            trig = {"dis": yes_leg is not None and yes_leg[3] in ("dis_ridge", "dis_ewma"),
+                    "agree": yes_leg is not None and yes_leg[3] == "agree",
+                    "withyes": yes_leg is not None,
+                    "any": True}[no_trigger]
+            cands = []
+            if trig:
+                pav_all = {x: (Pe[x] + Pr[x]) / 2 for x in bk}
+                if no_mode in ("fav", "both"):
+                    fav = max(bk, key=lambda x: pr[x][0])
+                    if (not no_warmer_only) or yb is None or fav[0] > yb[0]: cands.append(fav)
+                if no_mode in ("warm", "both") and yb is not None:
+                    nb = (yb[0] + 2, yb[1] + 2)
+                    if nb in pr: cands.append(nb)
+                if no_mode == "overpriced":
+                    cands = [x for x in bk if pr[x][0] - pav_all[x] >= no_edge
+                             and ((not no_warmer_only) or yb is None or x[0] > yb[0])]
+                if no_mode == "coldest_rich":                    # the bucket the model likes least, if it is dear
+                    x = min(bk, key=lambda z: pav_all[z] - pr[z][0])
+                    if pr[x][0] - pav_all[x] >= no_edge: cands.append(x)
+            for x in dict.fromkeys(cands):
+                yask = pr[x][0]
+                if not (no_band[0] <= yask <= no_band[1]): continue
+                nask = 1 - yask; nwon = not pr[x][1]; npav = 1 - (Pe[x] + Pr[x]) / 2
+                if no_size == "share" and yes_leg: nwant = yes_leg[2] * nask
+                elif no_size == "edge": nwant = C.STAKE * max(0.0, 1 + edge_mult * (npav - nask))
+                else: nwant = C.STAKE
+                nstake = min(nwant, stake_cap or C.MAX_PER_MARKET_USD, C.MAX_PER_CITY_DAY_USD - spent)
+                if nstake < C.MIN_ORDER_SHARES * nask: continue
+                spent += nstake; nsh = nstake / nask; nfee = 0.05 * nask * (1 - nask) * nsh
+                trades.append(dict(city=r.city, mday=r.mday, why="no_" + no_mode, price=nask, stake=nstake,
+                                   won=nwon, pnl=(nsh - nstake if nwon else -nstake) - nfee))
     return pd.DataFrame(trades)
 
 
 def score(name, cfg, P):
-    rk = {k: v for k, v in cfg.items() if k in ("agree_tol", "third", "blend", "sd_spread", "blend_sd", "sd_pick", "sd_pick_dis", "min_p", "min_edge", "agree_band", "dis_edge", "dis_min_p", "model_band", "modes", "stake_mode", "kelly_frac", "edge_mult", "stake_cap", "no_leg", "no_band")}
+    rk = {k: v for k, v in cfg.items() if k in ("agree_tol", "third", "blend", "sd_spread", "blend_sd", "sd_pick", "sd_pick_dis", "min_p", "min_edge", "agree_band", "dis_edge", "dis_min_p", "model_band", "modes", "stake_mode", "kelly_frac", "edge_mult", "stake_cap", "no_leg", "no_band", "no_mode", "no_trigger", "no_size", "no_edge", "no_warmer_only")}
     F = walk(P, cfg)
     if rk:
         ex = P[["city", "mday", "nbm_max", "mos_spread"]].rename(columns={"nbm_max": "mu_n"})
@@ -266,6 +295,34 @@ def score(name, cfg, P):
 
 
 BATCHES = {
+    # batch 18: the NO leg, swept along every dimension of production rule H, on top of the current live config
+    # (weak agree legs dropped, edge sizing m=4 cap $25).
+    "b18": (lambda L=dict(modes=C.MODES, stake_mode="edge", edge_mult=4.0, stake_cap=25.0): {
+        "LIVE config, NO leg OFF":            dict(L),
+        "rule H as shipped (.35-.55 fav dis)": dict(L, no_leg=True),
+        "band .25-.55":                       dict(L, no_leg=True, no_band=(0.25, 0.55)),
+        "band .30-.55":                       dict(L, no_leg=True, no_band=(0.30, 0.55)),
+        "band .40-.55":                       dict(L, no_leg=True, no_band=(0.40, 0.55)),
+        "band .45-.55":                       dict(L, no_leg=True, no_band=(0.45, 0.55)),
+        "band .35-.50":                       dict(L, no_leg=True, no_band=(0.35, 0.50)),
+        "band .35-.60":                       dict(L, no_leg=True, no_band=(0.35, 0.60)),
+        "band .35-.65":                       dict(L, no_leg=True, no_band=(0.35, 0.65)),
+        "band .30-.65":                       dict(L, no_leg=True, no_band=(0.30, 0.65)),
+        "band .25-.75":                       dict(L, no_leg=True, no_band=(0.25, 0.75)),
+        "mode warm (variant B)":              dict(L, no_leg=True, no_mode="warm"),
+        "mode both (A+B)":                    dict(L, no_leg=True, no_mode="both"),
+        "mode overpriced edge .05":           dict(L, no_leg=True, no_mode="overpriced", no_edge=0.05),
+        "mode overpriced edge .10":           dict(L, no_leg=True, no_mode="overpriced", no_edge=0.10),
+        "mode overpriced edge .15":           dict(L, no_leg=True, no_mode="overpriced", no_edge=0.15),
+        "mode coldest_rich edge .10":         dict(L, no_leg=True, no_mode="coldest_rich", no_edge=0.10),
+        "trigger withyes (any yes leg)":      dict(L, no_leg=True, no_trigger="withyes"),
+        "trigger any (no yes leg needed)":    dict(L, no_leg=True, no_trigger="any"),
+        "trigger agree only":                 dict(L, no_leg=True, no_trigger="agree"),
+        "warmer_only OFF":                    dict(L, no_leg=True, no_warmer_only=False),
+        "size flat":                          dict(L, no_leg=True, no_size="flat"),
+        "size edge":                          dict(L, no_leg=True, no_size="edge"),
+        "overpriced .10 + trigger any":       dict(L, no_leg=True, no_mode="overpriced", no_edge=0.10, no_trigger="any"),
+    })(),
     # batch 17: the edge-sizing multiplier was picked by hand. Sweep it, sweep the cap, and check the whole family
     # rather than the one constant -- a hand-chosen constant that only works at one value is the failure mode that
     # sank pick_sd twice.
