@@ -28,7 +28,10 @@ DISAGREE_MAX_PRICE = 0.075
 NO_LEG = True
 NO_LEG_MIN_YES = 0.35; NO_LEG_MAX_YES = 0.55   # 0.30-0.35 was a coin-flip on fees (NO at ~69c, 72% win); 0.35-0.55: 76 nights, 84% win, +40%
 NO_LEG_SHARE_MATCH = True         # size the NO leg to the YES leg's share count (the 0xdd22 sizing); else STAKE
-STAKE = 10.0                      # base $ per bucket, before the edge tilt below
+STAKE = 6.0                       # base $ per bucket, before the edge tilt below.
+# 2026-09-26: sized for a $200 wallet. A cash-flow bootstrap over 2000 alternative orderings of the same
+# trading days (3-day hold from entry to redemption, $2 reserve) puts the chance of running dry at 24.6% on a
+# $200 wallet at a $10 base stake, 6.2% at $7.50 and 1.4% at $6.00. Everything below is the same 0.60 scale.
 # 2026-09-26: size by the model's own edge instead of betting a flat stake on everything --
 #   stake = STAKE * (1 + EDGE_MULT * (P_model - ask)), so a bucket the model likes far more than the price gets
 #   up to MAX_PER_MARKET_USD and one it barely likes gets a couple of dollars. Largest single improvement found
@@ -38,9 +41,9 @@ STAKE_MODE = "edge"               # "edge" | "flat"
 EDGE_MULT = 4.0                   # 2026-09-26: 6 -> 4, mid-plateau. The multiplier sweep is monotone and flat
                                   # over 4..6 ($3979 / $4018 / $4024 standalone), so 4 is the same effect with a
                                   # gentler tilt: max stake is reached at edge +0.375 rather than +0.25.
-MAX_PER_MARKET_USD = 25.0         # 20 -> 25: the validated cap; below this the tilt is clipped before it acts
-MAX_PER_CITY_DAY_USD = 35.0       # YES leg + share-matched NO leg
-MAX_DAILY_USD = 150.0             # 120 -> 150: the backtested config peaks at $111/day and would clip at 120
+MAX_PER_MARKET_USD = 15.0         # 0.60 * the validated $25 cap
+MAX_PER_CITY_DAY_USD = 21.0       # YES leg + share-matched NO leg (0.60 scale)
+MAX_DAILY_USD = 90.0              # 0.60 scale; peak modelled day is $63, so this does not bind
 MIN_ORDER_SHARES = 5
 AUTO_REDEEM = True                # if a wallet's free USDC can't fund an order, redeem its resolved winners first (bot/redeem.py; gas = POL from the EOA)
 CASH_RESERVE = 2.0                # keep this much USDC free after funding an order
