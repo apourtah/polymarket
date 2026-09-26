@@ -35,7 +35,9 @@ STAKE = 10.0                      # base $ per bucket, before the edge tilt belo
 #   (search.py b16/b17) and not a tuned constant: the response is monotone over every multiplier 1..8 and every
 #   cap $15..$30, all of which beat the flat stake on both P&L and ROI across all three folds.
 STAKE_MODE = "edge"               # "edge" | "flat"
-EDGE_MULT = 6.0
+EDGE_MULT = 4.0                   # 2026-09-26: 6 -> 4, mid-plateau. The multiplier sweep is monotone and flat
+                                  # over 4..6 ($3979 / $4018 / $4024 standalone), so 4 is the same effect with a
+                                  # gentler tilt: max stake is reached at edge +0.375 rather than +0.25.
 MAX_PER_MARKET_USD = 25.0         # 20 -> 25: the validated cap; below this the tilt is clipped before it acts
 MAX_PER_CITY_DAY_USD = 35.0       # YES leg + share-matched NO leg
 MAX_DAILY_USD = 150.0             # 120 -> 150: the backtested config peaks at $111/day and would clip at 120
