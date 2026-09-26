@@ -128,7 +128,8 @@ def walk(P, cfg):
     feats = [f for f in feats if f in P.columns]
     mk = {k: v for k, v in cfg.items() if k in ("est", "alpha", "ridge_window", "ewma_gain", "sd_window", "sd_scale", "est_kw")}
     rows = []
-    days = sorted(x for x in P.mday.unique() if dt.date(2026, 1, 18) <= x <= dt.date(2026, 9, 22))
+    a = cfg.get("_from") or dt.date(2026, 1, 18); b = cfg.get("_to") or max(P.mday)
+    days = sorted(x for x in P.mday.unique() if a <= x <= b)      # _from/_to restrict the walk to the days needed
     for d in days:
         H = P[P.mday < d]
         if len(H) < C.MIN_HISTORY_DAYS: continue
