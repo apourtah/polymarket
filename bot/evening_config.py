@@ -103,7 +103,12 @@ REST_MIN = (2, 6)                 # legacy; the staged plan below supersedes it
 # inside that leg's buy band. Whatever has been acquired is kept; the remainder is abandoned at the timeout.
 # The first pass is delayed by the existing 0-3 min jitter on place_at.
 EXEC_CYCLE_MIN = (6, 9)           # minutes a resting bid waits before it is cancelled and the cycle repeats
-EXEC_TIMEOUT_MIN = 25             # stop working the remainder this long after the first pass
+EXEC_TIMEOUT_MIN = 60             # stop working the remainder this long after the first pass. 2026-09-26: 25
+                                  # -> 60. exec_backtest.py, on real 5-minute price paths: 15 min $1899, 25 min
+                                  # $2563, 45 min $3037, 60 min $3239 with 97% of the intended size filled and
+                                  # the lowest variance of the set. A longer window is simply more real chances
+                                  # for the market to come down to the resting bid. Execution still finishes by
+                                  # ~22:15 local, well inside the 21:00-01:00 trading window.
 MAKER_TICKS = 1                   # rest this many cents ABOVE the best bid: 1 = bid+1c, price-improving and at
                                   # the front of the queue, while still passive. Quoting relative to the bid
                                   # rather than the ask keeps it passive when the spread is wider than 2c.
